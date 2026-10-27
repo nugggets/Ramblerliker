@@ -44,8 +44,7 @@ private const val SITE = "https://m.dating.rambler.ru"
 private const val DEFAULT_LIKE_URL = "/api/a-likes?likes=1&login={login}&num=1"
 private const val DEFAULT_SBODY = "pol=1&bage=60&tage=99&purp=2&geo=3159%2C4312%2C4400&online=0"
 private const val DEFAULT_LIMIT = 60
-private const val DEFAULT_FROM = 10
-private const val DEFAULT_TO = 20
+private const val DEFAULT_PER_HOUR = 15
 private const val MAX_PER_HOUR = 300
 private const val MAX_LIMIT = 2000
 private const val DEFAULT_WIN_FROM = 9
@@ -105,10 +104,9 @@ class MainActivity : Activity() {
     private lateinit var recFilter: EditText
     private lateinit var status: TextView
     private lateinit var etLimit: EditText
-    private lateinit var etFrom: EditText
+    private lateinit var etPerHour: EditText
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
-    private lateinit var etTo: EditText
     private lateinit var etLikeUrl: EditText
     private lateinit var tabBtns: List<Button>
     private lateinit var logText: TextView
@@ -117,6 +115,8 @@ class MainActivity : Activity() {
     private lateinit var topBar: TextView
     private var lastLikeAt = 0L
     private val logs = ArrayList<String>()
+    private val profInfo = HashMap<String, String>()
+    private var keysLogged = false
     private var curTab = 0
     private var onlyErr = false
     private var sessLikes = 0
@@ -284,17 +284,11 @@ class MainActivity : Activity() {
             setSingleLine()
             setText(prefs.getInt("limit", DEFAULT_LIMIT).toString())
         }
-        etFrom = EditText(this).apply {
-            hint = "от"
+        etPerHour = EditText(this).apply {
+            hint = "лайков в час"
             inputType = InputType.TYPE_CLASS_NUMBER
             setSingleLine()
-            setText(prefs.getInt("hourFrom", DEFAULT_FROM).toString())
-        }
-        etTo = EditText(this).apply {
-            hint = "до"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setSingleLine()
-            setText(prefs.getInt("hourTo", DEFAULT_TO).toString())
+            setText(prefs.getInt("perHour", DEFAULT_PER_HOUR).toString())
         }
         etWinFrom = EditText(this).apply {
             hint = "с (час)"
@@ -321,8 +315,8 @@ class MainActivity : Activity() {
                     addView(status)
                     addView(TextView(this@MainActivity).apply { text = "\nЛимит в сутки (макс. $MAX_LIMIT):" })
                     addView(etLimit)
-                    addView(TextView(this@MainActivity).apply { text = "Лайков в час: от и до (макс. $MAX_PER_HOUR):" })
-                    addView(row(etFrom, etTo))
+                    addView(TextView(this@MainActivity).apply { text = "Лайков в час (макс. $MAX_PER_HOUR):" })
+                    addView(etPerHour)
                     addView(TextView(this@MainActivity).apply { text = "Окно работы по Москве, часы от и до (0 и 24 = круглосуточно):" })
                     addView(row(etWinFrom, etWinTo))
                     addView(TextView(this@MainActivity).apply { text = "URL лайка ({login} подставляется сам):" })
@@ -330,8 +324,8 @@ class MainActivity : Activity() {
                     addView(TextView(this@MainActivity).apply {
                         textSize = 12f
                         text = "\nПриложение берёт анкеты из поиска сайта (с твоими фильтрами) и шлёт лайки " +
-                            "напрямую. Каждый час выбирается случайная цель в диапазоне «от–до» лайков, паузы " +
-                            "между лайками растягиваются на весь час; когда цель выполнена, приложение ждёт " +
+                            "напрямую. Ставит заданное число лайков в час: паузы " +
+                            "между лайками растягиваются на весь час; когда норма часа выполнена, приложение ждёт " +
                             "до конца часа. Лайки ставятся только в окне работы по Москве. Держи приложение открытым, экран включён, ты залогинен на " +
                             "вкладке «Браузер». Первый тест: лимит 3. При капче или предупреждении — «Стоп». " +
                             "Ставятся ли лайки, видно в шапке и на вкладке «Журнал»."
@@ -508,7 +502,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.7  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.8  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -630,17 +624,15 @@ class MainActivity : Activity() {
             toast("В URL лайка должно быть {login}")
             return false
         }
-        val from = (etFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_FROM).coerceIn(1, MAX_PER_HOUR)
-        val to = (etTo.text.toString().trim().toIntOrNull() ?: DEFAULT_TO).coerceIn(from, MAX_PER_HOUR)
+        val perHour = (etPerHour.text.toString().trim().toIntOrNull() ?: DEFAULT_PER_HOUR).coerceIn(1, MAX_PER_HOUR)
         val wf = (etWinFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_FROM).coerceIn(0, 23)
         val wt = (etWinTo.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_TO).coerceIn(wf + 1, 24)
-        prefs.edit().putInt("limit", lim).putInt("hourFrom", from).putInt("hourTo", to)
+        prefs.edit().putInt("limit", lim).putInt("perHour", perHour)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url).apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())
-        etFrom.setText(from.toString())
-        etTo.setText(to.toString())
+        etPerHour.setText(perHour.toString())
         etLikeUrl.setText(url)
         toast("Сохранено")
         return true
@@ -658,12 +650,14 @@ class MainActivity : Activity() {
         hasMore = true
         queue.clear()
         seen.clear()
+        profInfo.clear()
+        keysLogged = false
         sessLikes = 0
         lastLikeAt = 0L
         sessStart = SystemClock.elapsedRealtime()
         nextAt = 0L
         nightLogged = false
-        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, ${prefs.getInt("hourFrom", DEFAULT_FROM)}–${prefs.getInt("hourTo", DEFAULT_TO)} лайков в час, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, ${prefs.getInt("perHour", DEFAULT_PER_HOUR)} лайков в час, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
         h.post(tick)
         updateStatus()
@@ -737,21 +731,15 @@ class MainActivity : Activity() {
         updateStatus()
     }
 
-    private fun pickTarget(): Int {
-        val from = prefs.getInt("hourFrom", DEFAULT_FROM)
-        val to = maxOf(from, prefs.getInt("hourTo", DEFAULT_TO))
-        return from + rnd.nextInt(to - from + 1)
-    }
-
     // true, если в текущем часе ещё можно ставить лайки
     private fun hourOk(): Boolean {
         val now = SystemClock.elapsedRealtime()
         if (hourStart == 0L || now - hourStart >= 3600000L) {
             hourStart = now
             hourCount = 0
-            hourTarget = pickTarget()
-            logMsg("🕐 Новый час: цель $hourTarget лайков (диапазон ${prefs.getInt("hourFrom", DEFAULT_FROM)}–${prefs.getInt("hourTo", DEFAULT_TO)})")
+            logMsg("🕐 Новый час: норма ${prefs.getInt("perHour", DEFAULT_PER_HOUR)} лайков")
         }
+        hourTarget = prefs.getInt("perHour", DEFAULT_PER_HOUR)
         return hourCount < hourTarget
     }
 
@@ -795,8 +783,17 @@ class MainActivity : Activity() {
                 val o = arr.optJSONObject(i) ?: continue
                 val lg = o.optString("login")
                 if (lg.isEmpty()) continue
+                if (!keysLogged) {
+                    keysLogged = true
+                    val keys = ArrayList<String>()
+                    val it = o.keys()
+                    while (it.hasNext()) keys.add(it.next())
+                    logMsg("🔎 Поля анкеты: ${keys.joinToString(", ")}")
+                    logMsg("   пример: ${o.toString().replace(lg, mask(lg)).take(600)}")
+                }
                 if (o.optInt("own_like", 0) == 0 && seen.add(lg)) {
                     queue.addLast(lg)
+                    profInfo[lg] = profileInfo(o)
                     added++
                 }
             }
@@ -814,6 +811,26 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun pickStr(o: JSONObject, vararg keys: String): String {
+        for (k in keys) {
+            val v = o.opt(k) ?: continue
+            if (v == JSONObject.NULL) continue
+            val t = v.toString().trim()
+            if (t.isNotEmpty() && t != "0" && t != "null") return t
+        }
+        return ""
+    }
+
+    // «Имя, 27 лет, ищет 25–35 лет» из объекта анкеты в ответе поиска
+    private fun profileInfo(o: JSONObject): String {
+        val name = pickStr(o, "name", "fname", "first_name", "nick", "nickname")
+        val age = pickStr(o, "age", "years")
+        val from = pickStr(o, "bage", "age_from", "agefrom", "seek_age_from", "search_age_from", "sbage")
+        val to = pickStr(o, "tage", "age_to", "ageto", "seek_age_to", "search_age_to", "stage")
+        val seek = if (from.isEmpty() && to.isEmpty()) "?" else "${from.ifEmpty { "?" }}–${to.ifEmpty { "?" }}"
+        return "${name.ifEmpty { "имя ?" }}, ${if (age.isEmpty()) "? лет" else "$age лет"}, ищет $seek лет"
+    }
+
     private fun onLike(login: String, text: String) {
         h.removeCallbacks(wd)
         waiting = false
@@ -827,7 +844,7 @@ class MainActivity : Activity() {
                 lastLikeAt = SystemClock.elapsedRealtime()
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
-                logMsg("❤ Лайк ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}: ${mask(login)}, осталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}")
+                logMsg("❤ Лайк ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}: ${profInfo[login] ?: "данных анкеты нет"} ($login), осталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}")
                 if (sessLikes <= 3) logMsg("   ответ сайта: ${text.take(150)}")
                 if (j.has("likesleft") && likesLeft <= 0) {
                     stopLikes("лайки на сегодня закончились (по данным сайта)")
