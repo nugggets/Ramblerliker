@@ -8,12 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
@@ -31,7 +29,6 @@ import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -45,8 +42,6 @@ private const val DEFAULT_LIKE_URL = "/api/a-likes?likes=1&login={login}&num=1"
 private const val DEFAULT_SBODY = "pol=1&bage=60&tage=99&purp=2&geo=3159%2C4312%2C4400&online=0"
 private const val DEFAULT_LIMIT = 60
 private const val MAX_LIMIT = 300
-private const val LOG_MAX = 500
-private var crashHookSet = false
 
 // Записывает все fetch/XHR запросы страницы и ответы на них
 private const val HOOK_JS = """
@@ -101,17 +96,6 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var etLimit: EditText
     private lateinit var etLikeUrl: EditText
-    private lateinit var tabBtns: List<Button>
-    private lateinit var logText: TextView
-    private lateinit var logStats: TextView
-    private lateinit var logFile: File
-    private val logs = ArrayList<String>()
-    private var curTab = 0
-    private var onlyErr = false
-    private var sessLikes = 0
-    private var sessStart = 0L
-    private var nextAt = 0L
-    private var nightLogged = false
 
     private val rec = ArrayList<JSONObject>()
     private val h = Handler(Looper.getMainLooper())
@@ -140,13 +124,6 @@ class MainActivity : Activity() {
     private val seen = HashSet<String>()
 
     private val tick = Runnable { step() }
-    private val uiTick = object : Runnable {
-        override fun run() {
-            if (curTab == 3) renderLog()
-            if (curTab == 2) updateStatus()
-            h.postDelayed(this, 3000)
-        }
-    }
     private val wd = Runnable {
         if (waiting && running) {
             waiting = false
@@ -176,24 +153,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("liker", Context.MODE_PRIVATE)
-        logFile = File(filesDir, "liker.log")
-        try {
-            if (logFile.exists()) logs.addAll(logFile.readLines().takeLast(LOG_MAX))
-        } catch (e: Exception) {
-        }
-        if (!crashHookSet) {
-            crashHookSet = true
-            val file = logFile
-            val old = Thread.getDefaultUncaughtExceptionHandler()
-            Thread.setDefaultUncaughtExceptionHandler { th, err ->
-                try {
-                    file.appendText(stamp() + "  ⚠ КРАШ приложения: $err\n")
-                } catch (ex: Exception) {
-                }
-                old?.uncaughtException(th, err)
-            }
-        }
-        logMsg("Приложение открыто")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -290,45 +249,20 @@ class MainActivity : Activity() {
             )
         }
 
-        // --- вкладка «Журнал» ---
-        logStats = TextView(this).apply { textSize = 13f }
-        logText = TextView(this).apply {
-            textSize = 11f
-            setTextIsSelectable(true)
-        }
-        val errBtn = btn("Все записи") {}
-        errBtn.setOnClickListener {
-            onlyErr = !onlyErr
-            errBtn.text = if (onlyErr) "Только ошибки" else "Все записи"
-            renderLog()
-        }
-        val logPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            addView(logStats)
-            addView(row(errBtn, btn("Очистить") { clearLog() }))
-            addView(row(btn("Копировать") { copyLog() }, btn("Поделиться") { shareLog() }))
-            addView(ScrollView(this@MainActivity).apply { addView(logText) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        }
-
-        panels = listOf(browser, recPanel, likes, logPanel)
-        tabBtns = listOf(
+        panels = listOf(browser, recPanel, likes)
+        val tabs = row(
             btn("Браузер") { show(0) },
             btn("Запросы") { show(1) },
-            btn("Лайки") { show(2) },
-            btn("Журнал") { show(3) }
+            btn("Лайки") { show(2) }
         )
-        val tabs = row(*tabBtns.toTypedArray())
-        // панель вкладок — внизу экрана
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            for (p in panels) addView(p, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(tabs)
+            for (p in panels) addView(p, LinearLayout.LayoutParams(-1, 0, 1f))
         }
         setContentView(root)
         show(0)
         updateStatus()
-        h.postDelayed(uiTick, 3000)
     }
 
     private fun setupWeb() {
@@ -350,7 +284,6 @@ class MainActivity : Activity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 view?.evaluateJavascript(HOOK_JS + API_JS, null)
                 CookieManager.getInstance().flush()
-                logMsg("Страница загружена: ${(url ?: "").substringBefore('?').take(70)}")
             }
         }
         web.loadUrl(SITE)
@@ -381,7 +314,7 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun apiLike(login: String, text: String) {
-            runOnUiThread { onLike(login, text) }
+            runOnUiThread { onLike(text) }
         }
 
         @JavascriptInterface
@@ -395,80 +328,9 @@ class MainActivity : Activity() {
     }
 
     private fun show(i: Int) {
-        curTab = i
         for ((k, p) in panels.withIndex()) p.visibility = if (k == i) View.VISIBLE else View.GONE
-        for ((k, b) in tabBtns.withIndex()) {
-            b.alpha = if (k == i) 1f else 0.5f
-            b.setTypeface(null, if (k == i) Typeface.BOLD else Typeface.NORMAL)
-        }
         if (i == 1) renderRec()
         if (i == 2) updateStatus()
-        if (i == 3) renderLog()
-    }
-
-    // ---------- журнал ----------
-    private fun stamp() = SimpleDateFormat("dd.MM HH:mm:ss", Locale.US).format(Date())
-
-    private fun mask(s: String) = if (s.length <= 3) s else s.take(3) + "…"
-
-    private fun logMsg(msg: String) {
-        val line = stamp() + "  " + msg
-        logs.add(line)
-        while (logs.size > LOG_MAX) logs.removeAt(0)
-        try {
-            if (logFile.length() > 150000) {
-                logFile.writeText(logs.joinToString("\n") + "\n")
-            } else {
-                logFile.appendText(line + "\n")
-            }
-        } catch (e: Exception) {
-        }
-        if (curTab == 3) renderLog()
-    }
-
-    private fun nextInfo(): String {
-        if (!running) return "-"
-        if (waiting) return "ждём ответ сайта"
-        val left = (nextAt - SystemClock.elapsedRealtime()) / 1000
-        return if (left > 0) "через $left с" else "сейчас"
-    }
-
-    private fun logPlain(): String =
-        (if (onlyErr) logs.filter { it.contains("⚠") } else logs).joinToString("\n")
-
-    private fun renderLog() {
-        val mins = if (running) (SystemClock.elapsedRealtime() - sessStart) / 60000 else 0
-        logStats.text = (if (running) "РАБОТАЕТ, $mins мин" else "остановлен") +
-            "\nлайков за сессию: $sessLikes, сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
-            "\nв очереди: ${queue.size}, ошибок: $errors, следующее действие: ${nextInfo()}"
-        val l = (if (onlyErr) logs.filter { it.contains("⚠") } else logs).takeLast(200).reversed()
-        val t = if (l.isEmpty()) "Журнал пуст." else l.joinToString("\n")
-        // не трогаем текст, если он не изменился, чтобы не сбивать выделение
-        if (logText.text.toString() != t) logText.text = t
-    }
-
-    private fun copyLog() {
-        val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cb.setPrimaryClip(ClipData.newPlainText("log", redact(logPlain())))
-        toast("Журнал скопирован")
-    }
-
-    private fun shareLog() {
-        val i = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, redact(logPlain()))
-        }
-        startActivity(Intent.createChooser(i, "Поделиться"))
-    }
-
-    private fun clearLog() {
-        logs.clear()
-        try {
-            logFile.writeText("")
-        } catch (e: Exception) {
-        }
-        renderLog()
-        toast("Журнал очищен")
     }
 
     private fun clearSession() {
@@ -478,7 +340,6 @@ class MainActivity : Activity() {
         WebStorage.getInstance().deleteAllData()
         web.clearCache(true)
         web.loadUrl(SITE)
-        logMsg("Сессия очищена (cookie и данные сайта удалены)")
         toast("Сессия очищена")
     }
 
@@ -563,37 +424,25 @@ class MainActivity : Activity() {
         hasMore = true
         queue.clear()
         seen.clear()
-        sessLikes = 0
-        sessStart = SystemClock.elapsedRealtime()
-        nextAt = 0L
-        nightLogged = false
-        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, уже сегодня ${prefs.getInt("count", 0)}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
         h.post(tick)
         updateStatus()
     }
 
     private fun stopLikes(reason: String) {
-        val was = running
         running = false
-        nextAt = 0L
         waiting = false
         h.removeCallbacks(tick)
         h.removeCallbacks(wd)
         stopService(Intent(this, KeepAliveService::class.java))
         if (reason != "остановлено") lastError = reason
-        if (was) {
-            logMsg("■ Стоп: ${if (reason == "остановлено") "остановлено вручную" else reason}. Лайков за сессию: $sessLikes")
-        }
         updateStatus()
     }
 
     private fun step() {
         if (!running || waiting) return
-        nextAt = 0L
         val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
         if (prefs.getString("day", "") != today) {
-            if (!prefs.getString("day", "").isNullOrEmpty()) logMsg("Новый день, счётчик лайков сброшен")
             prefs.edit().putString("day", today).putInt("count", 0).apply()
         }
         val limit = prefs.getInt("limit", DEFAULT_LIMIT)
@@ -603,23 +452,12 @@ class MainActivity : Activity() {
         }
         val hour = Calendar.getInstance(TimeZone.getTimeZone("Europe/Moscow")).get(Calendar.HOUR_OF_DAY)
         if (hour < 9 || hour >= 23) {
-            if (!nightLogged) {
-                nightLogged = true
-                logMsg("🌙 Вне окна работы 9:00–23:00 МСК, жду")
-            }
-            nextAt = SystemClock.elapsedRealtime() + 30000
             updateStatus()
             h.postDelayed(tick, 30000)
             return
         }
-        if (nightLogged) {
-            nightLogged = false
-            logMsg("☀ Окно работы открылось, продолжаю")
-        }
         if (web.url?.startsWith(SITE) != true) {
-            logMsg("Страница не на сайте Rambler, загружаю заново")
             web.loadUrl(SITE)
-            nextAt = SystemClock.elapsedRealtime() + 6000
             h.postDelayed(tick, 6000)
             return
         }
@@ -634,7 +472,6 @@ class MainActivity : Activity() {
     private fun fetchBatch() {
         val body = (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY }
         waiting = true
-        logMsg("🔎 Запрашиваю анкеты из поиска (offset=$offset)")
         h.postDelayed(wd, 20000)
         web.evaluateJavascript("window.__lk && window.__lk.batch($offset, ${JSONObject.quote(body)});", null)
     }
@@ -673,7 +510,6 @@ class MainActivity : Activity() {
             offset += arr.length()
             hasMore = j.optInt("has_more", 0) == 1
             rowErr = 0
-            logMsg("🔎 Получено анкет: ${arr.length()}, новых для лайка: $added, в очереди: ${queue.size}, есть ещё: ${if (hasMore) "да" else "нет"}")
             if (added == 0 && !hasMore) {
                 stopLikes("анкеты закончились — поменяй фильтры поиска на сайте")
                 return
@@ -684,7 +520,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun onLike(login: String, text: String) {
+    private fun onLike(text: String) {
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
@@ -692,10 +528,8 @@ class MainActivity : Activity() {
             val j = JSONObject(text)
             if (j.optInt("errno", -1) == 0) {
                 prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).apply()
-                sessLikes++
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
-                logMsg("❤ Лайк ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}: ${mask(login)}, осталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}")
                 if (j.has("likesleft") && likesLeft <= 0) {
                     stopLikes("лайки на сегодня закончились (по данным сайта)")
                     return
@@ -713,7 +547,6 @@ class MainActivity : Activity() {
         errors++
         rowErr++
         lastError = msg
-        logMsg("⚠ Ошибка (подряд $rowErr, всего $errors): $msg")
         if (rowErr >= 3) {
             stopLikes("3 ошибки подряд: $msg")
             return
@@ -727,17 +560,11 @@ class MainActivity : Activity() {
             sinceBreak++
             if (sinceBreak >= breakAt) {
                 d = 120000L + rnd.nextInt(240000)
-                logMsg("☕ Перерыв ${d / 1000} с (каждые $breakAt лайков)")
                 sinceBreak = 0
                 breakAt = 8 + rnd.nextInt(8)
             }
-            if (extraSec > 0) {
-                val e = maxOf(d, minOf(extraSec, 900) * 1000L)
-                if (e > d) logMsg("⏳ Сайт просит подождать ${e / 1000} с")
-                d = e
-            }
+            if (extraSec > 0) d = maxOf(d, minOf(extraSec, 900) * 1000L)
         }
-        nextAt = SystemClock.elapsedRealtime() + d
         h.postDelayed(tick, d)
         updateStatus()
     }
@@ -746,17 +573,9 @@ class MainActivity : Activity() {
         status.text = (if (running) "РАБОТАЕТ" else "остановлен") +
             "\nлайков сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
             "\nосталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}" +
-            "\nлайков за сессию: $sessLikes" +
             "\nв очереди анкет: ${queue.size}" +
-            "\nследующее действие: ${nextInfo()}" +
             "\nошибок: $errors" +
             "\nпоследняя ошибка: ${if (lastError.isEmpty()) "-" else lastError}"
-    }
-
-    override fun onDestroy() {
-        h.removeCallbacks(uiTick)
-        logMsg("Окно приложения закрыто" + if (running) " (лайки были запущены)" else "")
-        super.onDestroy()
     }
 
     override fun onPause() {
