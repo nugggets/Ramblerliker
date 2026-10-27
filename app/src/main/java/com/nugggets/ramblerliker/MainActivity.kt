@@ -2,6 +2,7 @@ package com.nugggets.ramblerliker
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -51,6 +52,18 @@ private const val DEFAULT_WIN_FROM = 9
 private const val DEFAULT_WIN_TO = 23
 private const val LOG_MAX = 500
 private var crashHookSet = false
+private var cookiesRestored = false
+private const val REP_MAX = 3000
+private val COOKIE_URLS = listOf(
+    "https://m.dating.rambler.ru/",
+    "https://dating.rambler.ru/",
+    "https://auth.rambler.ru/",
+    "https://id.rambler.ru/",
+    "https://rambler.ru/"
+)
+
+private class Prof(val name: String, val age: String, val from: String, val to: String, val city: String)
+private class Rep(val ts: Long, val login: String, val p: Prof)
 
 // Записывает все fetch/XHR запросы страницы и ответы на них
 private const val HOOK_JS = """
@@ -115,7 +128,16 @@ class MainActivity : Activity() {
     private lateinit var topBar: TextView
     private var lastLikeAt = 0L
     private val logs = ArrayList<String>()
-    private val profInfo = HashMap<String, String>()
+    private val profInfo = HashMap<String, Prof>()
+    private val reports = ArrayList<Rep>()
+    private lateinit var repFile: File
+    private lateinit var repStats: TextView
+    private lateinit var repText: TextView
+    private var onlyToday = true
+    private var sessionGood = false
+    private var authFails = 0
+    private var lastCookieSave = 0L
+    private var cookieSaveLogged = false
     private var keysLogged = false
     private var curTab = 0
     private var onlyErr = false
@@ -156,6 +178,7 @@ class MainActivity : Activity() {
         override fun run() {
             if (curTab == 3) renderLog()
             if (curTab == 2) updateStatus()
+            if (curTab == 4) renderReport()
             updateTop()
             h.postDelayed(this, 3000)
         }
@@ -195,6 +218,18 @@ class MainActivity : Activity() {
         logFile = File(filesDir, "liker.log")
         try {
             if (logFile.exists()) logs.addAll(logFile.readLines().takeLast(LOG_MAX))
+        } catch (e: Exception) {
+        }
+        repFile = File(filesDir, "likes_report.tsv")
+        try {
+            if (repFile.exists()) {
+                for (line in repFile.readLines().takeLast(REP_MAX)) {
+                    val f = line.split("\t")
+                    if (f.size < 7) continue
+                    val ts = f[0].toLongOrNull() ?: continue
+                    reports.add(Rep(ts, f[1], Prof(f[2], f[3], f[4], f[5], f[6])))
+                }
+            }
         } catch (e: Exception) {
         }
         if (!crashHookSet) {
@@ -365,12 +400,47 @@ class MainActivity : Activity() {
             addView(row(btn("Копировать") { copyLog() }, btn("Поделиться") { shareLog() }))
         }
 
-        panels = listOf(browser, recPanel, likes, logPanel)
+        // --- вкладка «Отчёт»: статистика и список лайкнутых анкет ---
+        repStats = TextView(this).apply {
+            textSize = 13f
+            setPadding(dp(8), dp(8), dp(8), dp(4))
+        }
+        repText = TextView(this).apply {
+            textSize = 12f
+            setPadding(dp(8), 0, dp(8), dp(8))
+            setTextIsSelectable(true)
+        }
+        val todayBtn = btn("Только сегодня") {}
+        todayBtn.setOnClickListener {
+            onlyToday = !onlyToday
+            todayBtn.text = if (onlyToday) "Только сегодня" else "За всё время"
+            renderReport()
+        }
+        val repPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                ScrollView(this@MainActivity).apply {
+                    addView(
+                        LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            addView(repStats)
+                            addView(repText)
+                        }
+                    )
+                },
+                LinearLayout.LayoutParams(-1, 0, 1f)
+            )
+            addView(row(todayBtn, btn("Очистить") { clearReport() }))
+            addView(row(btn("Копировать") { copyReport() }, btn("Поделиться") { shareReport() }))
+        }
+
+        panels = listOf(browser, recPanel, likes, logPanel, repPanel)
         tabBtns = listOf(
             btn("Браузер") { show(0) },
             btn("Запросы") { show(1) },
             btn("Лайки") { show(2) },
-            btn("Журнал") { show(3) }
+            btn("Журнал") { show(3) },
+            btn("Отчёт") { show(4) }
         )
         val tabs = row(*tabBtns.toTypedArray())
         // сверху шапка-заглушка, снизу вся панель управления
@@ -388,6 +458,11 @@ class MainActivity : Activity() {
 
     private fun setupWeb() {
         web = WebView(this)
+        if (!cookiesRestored) {
+            cookiesRestored = true
+            val n = restoreCookies()
+            if (n > 0) logMsg("🔑 Восстановлена сохранённая сессия (cookie: $n)")
+        }
         val s = web.settings
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
@@ -459,6 +534,7 @@ class MainActivity : Activity() {
         if (i == 1) renderRec()
         if (i == 2) updateStatus()
         if (i == 3) renderLog()
+        if (i == 4) renderReport()
     }
 
     // ---------- журнал ----------
@@ -494,6 +570,7 @@ class MainActivity : Activity() {
     private fun verdict(): String {
         if (!running) return if (sessLikes > 0) "■ остановлен, лайков за сессию: $sessLikes" else "■ остановлен"
         if (nightLogged) return "🌙 вне окна ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК, сейчас ${mskNow()} МСК"
+        if (authFails in 1..2 && !sessionGood) return "🔑 вход слетел, восстанавливаю (попытка $authFails из 2)"
         if (rowErr > 0) return "⚠ ошибки подряд: $rowErr, ${lastError.take(60)}"
         if (hourTarget > 0 && hourCount >= hourTarget) return "⏸ норма часа выполнена ($hourCount из $hourTarget), жду"
         if (lastLikeAt == 0L) return "… ждём первый лайк"
@@ -502,7 +579,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.8  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.9  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -554,6 +631,10 @@ class MainActivity : Activity() {
     private fun clearSession() {
         stopLikes("остановлено")
         CookieManager.getInstance().removeAllCookies(null)
+        prefs.edit().remove("cookies").apply()
+        sessionGood = false
+        lastCookieSave = 0L
+        cookieSaveLogged = false
         CookieManager.getInstance().flush()
         WebStorage.getInstance().deleteAllData()
         web.clearCache(true)
@@ -653,6 +734,7 @@ class MainActivity : Activity() {
         profInfo.clear()
         keysLogged = false
         sessLikes = 0
+        authFails = 0
         lastLikeAt = 0L
         sessStart = SystemClock.elapsedRealtime()
         nextAt = 0L
@@ -821,14 +903,193 @@ class MainActivity : Activity() {
         return ""
     }
 
-    // «Имя, 27 лет, ищет 25–35 лет» из объекта анкеты в ответе поиска
-    private fun profileInfo(o: JSONObject): String {
+    private fun findNested(o: JSONObject, names: List<String>, depth: Int): String {
+        val keysIt = o.keys()
+        while (keysIt.hasNext()) {
+            val k = keysIt.next()
+            val v = o.opt(k)
+            if (v is JSONObject) {
+                if (depth < 3) {
+                    val r = findNested(v, names, depth + 1)
+                    if (r.isNotEmpty()) return r
+                }
+            } else if (v != null && v != JSONObject.NULL && v !is JSONArray && names.any { n -> k == n || k.endsWith("_$n") }) {
+                val t = v.toString().trim()
+                if (t.isNotEmpty() && t != "0") return t
+            }
+        }
+        return ""
+    }
+
+    // Данные анкеты из объекта в ответе поиска: имя, возраст, возраст поиска, город
+    private fun profileInfo(o: JSONObject): Prof {
         val name = pickStr(o, "name", "fname", "first_name", "nick", "nickname")
         val age = pickStr(o, "age", "years")
-        val from = pickStr(o, "bage", "age_from", "agefrom", "seek_age_from", "search_age_from", "sbage")
-        val to = pickStr(o, "tage", "age_to", "ageto", "seek_age_to", "search_age_to", "stage")
-        val seek = if (from.isEmpty() && to.isEmpty()) "?" else "${from.ifEmpty { "?" }}–${to.ifEmpty { "?" }}"
-        return "${name.ifEmpty { "имя ?" }}, ${if (age.isEmpty()) "? лет" else "$age лет"}, ищет $seek лет"
+        var from = pickStr(o, "bage", "age_from", "agefrom")
+        var to = pickStr(o, "tage", "age_to", "ageto")
+        if (from.isEmpty()) from = findNested(o, listOf("bage", "age_from"), 0)
+        if (to.isEmpty()) to = findNested(o, listOf("tage", "age_to"), 0)
+        val city = pickStr(o, "city_n", "city_name")
+        return Prof(name, age, from, to, city)
+    }
+
+    // «Имя, 27 лет, ищет 25–35 лет»
+    private fun fmtProf(p: Prof): String {
+        val seek = if (p.from.isEmpty() && p.to.isEmpty()) "?" else "${p.from.ifEmpty { "?" }}–${p.to.ifEmpty { "?" }}"
+        return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else "${p.age} лет"}, ищет $seek лет"
+    }
+
+    // ---------- сохранение входа (cookie переживают перезапуск приложения) ----------
+    private fun saveCookies() {
+        try {
+            val cm = CookieManager.getInstance()
+            val m = LinkedHashMap<String, String>()
+            for (u in COOKIE_URLS) {
+                val c = cm.getCookie(u) ?: continue
+                for (part in c.split(";")) {
+                    val t = part.trim()
+                    val i = t.indexOf('=')
+                    if (i <= 0) continue
+                    m[t.substring(0, i)] = t.substring(i + 1)
+                }
+            }
+            if (m.isEmpty()) return
+            val j = JSONObject()
+            for ((k, v) in m) j.put(k, v)
+            prefs.edit().putString("cookies", j.toString()).apply()
+            lastCookieSave = SystemClock.elapsedRealtime()
+            if (!cookieSaveLogged) {
+                cookieSaveLogged = true
+                logMsg("🔑 Сессия сохранена (cookie: ${m.size}), после перезапуска вход восстановится сам")
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun restoreCookies(): Int {
+        val raw = prefs.getString("cookies", null) ?: return 0
+        var n = 0
+        try {
+            val j = JSONObject(raw)
+            val cm = CookieManager.getInstance()
+            val keysIt = j.keys()
+            while (keysIt.hasNext()) {
+                val k = keysIt.next()
+                val v = j.optString(k)
+                val attrs = when {
+                    k.startsWith("__Host-") -> "; Path=/; Secure; Max-Age=2592000"
+                    k.startsWith("__Secure-") -> "; Domain=.rambler.ru; Path=/; Secure; Max-Age=2592000"
+                    else -> "; Domain=.rambler.ru; Path=/; Max-Age=2592000"
+                }
+                cm.setCookie("https://m.dating.rambler.ru/", "$k=$v$attrs")
+                n++
+            }
+            cm.flush()
+        } catch (e: Exception) {
+        }
+        return n
+    }
+
+    // errno=24 на лайке: вход слетел. Пробуем вернуть сохранённую сессию и продолжить
+    private fun onAuthLost(login: String) {
+        sessionGood = false
+        authFails++
+        errors++
+        lastError = "errno=24 (вход слетел?)"
+        val n = if (authFails <= 2) restoreCookies() else 0
+        if (n == 0) {
+            logMsg("🔒 errno=24: вход слетел, восстановить не удалось")
+            stopLikes("слетел вход (errno=24): войди во вкладке «Браузер» и нажми «Старт»")
+            return
+        }
+        logMsg("⚠ errno=24, похоже слетел вход. Восстанавливаю сохранённую сессию (cookie: $n), попытка $authFails из 2")
+        queue.addFirst(login)
+        web.loadUrl(SITE)
+        nextAt = SystemClock.elapsedRealtime() + 10000
+        h.postDelayed(tick, 10000)
+        updateStatus()
+    }
+
+    // ---------- отчёт по лайкам ----------
+    private fun clean(s: String) = s.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+
+    private fun repLine(r: Rep) = listOf(
+        r.ts.toString(), clean(r.login), clean(r.p.name), clean(r.p.age), clean(r.p.from), clean(r.p.to), clean(r.p.city)
+    ).joinToString("\t")
+
+    private fun addReport(login: String) {
+        val p = profInfo[login] ?: Prof("", "", "", "", "")
+        val r = Rep(System.currentTimeMillis(), login, p)
+        reports.add(r)
+        while (reports.size > REP_MAX) reports.removeAt(0)
+        try {
+            if (repFile.length() > 300000) {
+                repFile.writeText(reports.joinToString("\n") { repLine(it) } + "\n")
+            } else {
+                repFile.appendText(repLine(r) + "\n")
+            }
+        } catch (e: Exception) {
+        }
+        if (curTab == 4) renderReport()
+    }
+
+    private fun renderReport() {
+        val dayF = SimpleDateFormat("yyyyMMdd", Locale.US)
+        val hourF = SimpleDateFormat("HH", Locale.US)
+        val tf = SimpleDateFormat("dd.MM HH:mm:ss", Locale.US)
+        val today = dayF.format(Date())
+        val todayList = reports.filter { dayF.format(Date(it.ts)) == today }
+        val now = System.currentTimeMillis()
+        val lastHour = reports.count { now - it.ts < 3600000L }
+        val byHour = todayList.groupBy { hourF.format(Date(it.ts)) }.toSortedMap()
+            .entries.joinToString(", ") { e -> "${e.key}ч: ${e.value.size}" }
+        repStats.text = "Сегодня лайкнуто: ${todayList.size} (счётчик приложения ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)})" +
+            "\nЗа последний час: $lastHour (норма ${prefs.getInt("perHour", DEFAULT_PER_HOUR)} в час)" +
+            "\nЗа сессию: $sessLikes, ошибок: $errors" +
+            "\nВсего в отчёте: ${reports.size}" +
+            "\nПо часам сегодня: ${if (byHour.isEmpty()) "-" else byHour}"
+        val list = (if (onlyToday) todayList else reports).takeLast(150).reversed()
+        val t = if (list.isEmpty()) "Пока нет лайков." else list.joinToString("\n") { r ->
+            tf.format(Date(r.ts)) + "  " + fmtProf(r.p) + "\n        " + (if (r.p.city.isEmpty()) "" else r.p.city + " · ") + r.login
+        }
+        if (repText.text.toString() != t) repText.text = t
+    }
+
+    private fun reportPlain(): String {
+        val tf = SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.US)
+        return reports.joinToString("\n") { r ->
+            tf.format(Date(r.ts)) + " | " + fmtProf(r.p) + " | " + r.p.city + " | " + r.login
+        }
+    }
+
+    private fun copyReport() {
+        val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cb.setPrimaryClip(ClipData.newPlainText("report", reportPlain()))
+        toast("Отчёт скопирован")
+    }
+
+    private fun shareReport() {
+        val i = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, reportPlain())
+        }
+        startActivity(Intent.createChooser(i, "Поделиться"))
+    }
+
+    private fun clearReport() {
+        AlertDialog.Builder(this)
+            .setMessage("Очистить весь отчёт по лайкам?")
+            .setPositiveButton("Очистить") { _, _ ->
+                reports.clear()
+                try {
+                    repFile.writeText("")
+                } catch (e: Exception) {
+                }
+                renderReport()
+                toast("Отчёт очищен")
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun onLike(login: String, text: String) {
@@ -842,15 +1103,21 @@ class MainActivity : Activity() {
                 sessLikes++
                 hourCount++
                 lastLikeAt = SystemClock.elapsedRealtime()
+                sessionGood = true
+                authFails = 0
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
-                logMsg("❤ Лайк ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}: ${profInfo[login] ?: "данных анкеты нет"} ($login), осталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}")
+                logMsg("❤ Лайк ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}: ${profInfo[login]?.let { fmtProf(it) } ?: "данных анкеты нет"} ($login), осталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}")
                 if (sessLikes <= 3) logMsg("   ответ сайта: ${text.take(150)}")
+                addReport(login)
+                if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
                 if (j.has("likesleft") && likesLeft <= 0) {
                     stopLikes("лайки на сегодня закончились (по данным сайта)")
                     return
                 }
                 scheduleNext(extraSec = j.optInt("likestimeout", 0))
+            } else if (j.optInt("errno", -1) == 24) {
+                onAuthLost(login)
             } else {
                 handleError("errno=${j.optInt("errno", -1)}: ${text.take(100)}")
             }
@@ -915,6 +1182,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        if (sessionGood) saveCookies()
         CookieManager.getInstance().flush()
     }
 
