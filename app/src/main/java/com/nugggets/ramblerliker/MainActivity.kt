@@ -119,6 +119,14 @@ class MainActivity : Activity() {
     private val h = Handler(Looper.getMainLooper())
     private val rnd = Random()
 
+    private var hideNoise = true
+    private var onlyPost = false
+    private val noiseHosts = listOf(
+        "mc.yandex.ru", "kraken.rambler.ru", "atlas.rambler.ru", "clickstream.sbrf.ru",
+        "logger.id.sber.ru", "top100", "/locales/", "id.sber.ru/cms", "googletagmanager",
+        "doubleclick", ".png", ".jpg", ".svg", ".woff"
+    )
+
     private var running = false
     private var errors = 0
     private var rowErr = 0
@@ -174,6 +182,18 @@ class MainActivity : Activity() {
         }
 
         // --- вкладка «Запросы» ---
+        val noiseBtn = btn("Шум: скрыт") {}
+        noiseBtn.setOnClickListener {
+            hideNoise = !hideNoise
+            noiseBtn.text = if (hideNoise) "Шум: скрыт" else "Шум: виден"
+            renderRec()
+        }
+        val postBtn = btn("Все методы") {}
+        postBtn.setOnClickListener {
+            onlyPost = !onlyPost
+            postBtn.text = if (onlyPost) "Только POST" else "Все методы"
+            renderRec()
+        }
         recFilter = EditText(this).apply {
             hint = "фильтр: like, vote, heart..."
             inputType = InputType.TYPE_CLASS_TEXT
@@ -187,6 +207,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
             addView(recFilter)
+            addView(row(noiseBtn, postBtn))
             addView(
                 row(
                     btn("Обновить") { renderRec() },
@@ -324,9 +345,19 @@ class MainActivity : Activity() {
     }
 
     // ---------- запросы ----------
+    private fun isNoise(o: JSONObject): Boolean {
+        val u = o.optString("u")
+        if (noiseHosts.any { u.contains(it) }) return true
+        return o.optString("r").startsWith("GIF89a")
+    }
+
     private fun filtered(): List<JSONObject> {
         val f = recFilter.text.toString().trim().lowercase()
-        return rec.filter { f.isEmpty() || (it.optString("u") + it.optString("p")).lowercase().contains(f) }
+        return rec.filter {
+            (!hideNoise || !isNoise(it)) &&
+                (!onlyPost || it.optString("m") == "POST") &&
+                (f.isEmpty() || (it.optString("u") + it.optString("p")).lowercase().contains(f))
+        }
     }
 
     private fun renderRec() {
@@ -337,10 +368,20 @@ class MainActivity : Activity() {
             }
     }
 
+    private fun redact(src: String): String {
+        var t = src
+        t = Regex("""(\\*"(?:code|phone|wstoken|hittoken|state|nonce|apiKey|uuid|sub|email|authOperationId|hashUserLoginId|login)\\*"\s*:\s*\\*")[^"\\]*""")
+            .replace(t, "\$1***")
+        t = Regex("""\b(code|state|nonce|wstoken|hittoken|authOperationId|Process-ID|login)=[^&"\\]*""")
+            .replace(t, "\$1=***")
+        t = Regex("""\+?7\d{10}""").replace(t, "7**********")
+        return t
+    }
+
     private fun recJson(): String {
         val a = JSONArray()
         for (o in filtered()) a.put(o)
-        return a.toString(1)
+        return redact(a.toString(1))
     }
 
     private fun copyRec() {
