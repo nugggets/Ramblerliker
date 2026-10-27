@@ -76,7 +76,7 @@ private const val HOOK_JS = """
    var m=(init&&init.method)||(i&&i.method)||'GET';
    var b=(init&&init.body)||'';
    return of.apply(this,arguments).then(function(r){
-     try{ r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:String(b).slice(0,1000),r:t.slice(0,700)}); }); }catch(e){}
+     try{ r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:String(b).slice(0,1000),r:t.slice(0,4000)}); }); }catch(e){}
      return r; });
  }; }
  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
@@ -85,7 +85,7 @@ private const val HOOK_JS = """
    var x=this;
    this.addEventListener('loadend',function(){
      var t=''; try{t=x.responseText||''}catch(e){}
-     send({m:x.__m,u:x.__u,s:x.status,p:String(b||'').slice(0,1000),r:t.slice(0,700)});
+     send({m:x.__m,u:x.__u,s:x.status,p:String(b||'').slice(0,1000),r:t.slice(0,4000)});
    });
    return xs.apply(this,arguments)};
 })();
@@ -432,6 +432,7 @@ class MainActivity : Activity() {
             )
             addView(row(todayBtn, btn("Очистить") { clearReport() }))
             addView(row(btn("Копировать") { copyReport() }, btn("Поделиться") { shareReport() }))
+            addView(btn("🔍 Найти «ищу от–до» на открытой анкете") { findAgeFields() })
         }
 
         panels = listOf(browser, recPanel, likes, logPanel, repPanel)
@@ -579,7 +580,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.9  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.10  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -679,7 +680,11 @@ class MainActivity : Activity() {
 
     private fun recJson(): String {
         val a = JSONArray()
-        for (o in filtered()) a.put(o)
+        for (o in filtered()) {
+            val c = JSONObject(o.toString())
+            c.put("r", c.optString("r").take(700))
+            a.put(c)
+        }
         return redact(a.toString(1))
     }
 
@@ -903,6 +908,62 @@ class MainActivity : Activity() {
         return ""
     }
 
+    // Находит на открытой анкете «Я ищу от X до Y лет» и ищет эти числа в записанных ответах сайта
+    private fun findAgeFields() {
+        web.evaluateJavascript("(function(){return document.body ? document.body.innerText : ''})()") { raw ->
+            val text = try {
+                JSONArray("[" + raw + "]").optString(0)
+            } catch (e: Exception) {
+                ""
+            }
+            val m = Regex("ищу\\s+от\\s+(\\d{1,3})\\s+до\\s+(\\d{1,3})", RegexOption.IGNORE_CASE).find(text)
+            if (m == null) {
+                logMsg("🔍 На странице нет текста «Я ищу от … до … лет». Открой анкету во вкладке «Браузер» (после «Обновить») и нажми кнопку ещё раз")
+                toast("Сначала открой анкету в «Браузере»")
+            } else {
+                analyseAge(m.groupValues[1], m.groupValues[2])
+            }
+        }
+    }
+
+    private fun analyseAge(x: String, y: String) {
+        logMsg("🔍 На странице: ищу от $x до $y лет. Ищу эти числа в записанных ответах сайта…")
+        val rx = Regex("\"([A-Za-z0-9_]+)\"\\s*:\\s*\"?" + x + "\"?\\s*[,}]")
+        val ry = Regex("\"([A-Za-z0-9_]+)\"\\s*:\\s*\"?" + y + "\"?\\s*[,}]")
+        var strict = false
+        var loose = false
+        for (o in rec.reversed()) {
+            val r = o.optString("r")
+            if (r.isEmpty()) continue
+            val kx = rx.findAll(r).map { it.groupValues[1] }.toList()
+            val ky = ry.findAll(r).map { it.groupValues[1] }.toList()
+            val fx = kx.firstOrNull { it != "age" && it.contains("age", true) }
+            val fy = ky.firstOrNull { it != "age" && it.contains("age", true) }
+            if (fx != null && fy != null && fx != fy) {
+                prefs.edit().putString("ageFromKey", fx).putString("ageToKey", fy).apply()
+                logMsg("🔍 Найдено: поля «$fx» = $x и «$fy» = $y. Запрос: ${o.optString("m")} ${o.optString("u").take(120)}")
+                logMsg("   тело запроса: ${o.optString("p").take(200)}")
+                logMsg("   начало ответа: ${r.take(300)}")
+                logMsg("   Теперь «ищет от–до» берётся из этих полей. Если в отчёте останется «нет данных», пришли мне эти строки журнала")
+                toast("Нашёл поля возраста: $fx / $fy")
+                strict = true
+                break
+            }
+            if (!loose && kx.isNotEmpty() && ky.isNotEmpty()) {
+                loose = true
+                logMsg("🔍 Числа $x и $y есть в ответе: ${o.optString("m")} ${o.optString("u").take(120)}; поля: ${kx.first()} / ${ky.first()}")
+                logMsg("   начало ответа: ${r.take(300)}")
+            }
+        }
+        if (!strict && !loose) {
+            val last = rec.filter { !isNoise(it) }.takeLast(8).joinToString(" | ") { "${it.optString("m")} ${it.optString("u").take(70)}" }
+            logMsg("🔍 Числа $x и $y в записанных ответах не найдены. Нажми «Обновить» в «Браузере», открой анкету и повтори. Последние запросы: $last")
+            toast("Не нашёл, см. журнал")
+        } else if (!strict) {
+            toast("Нашёл частично, см. журнал")
+        }
+    }
+
     private fun findNested(o: JSONObject, names: List<String>, depth: Int): String {
         val keysIt = o.keys()
         while (keysIt.hasNext()) {
@@ -925,18 +986,27 @@ class MainActivity : Activity() {
     private fun profileInfo(o: JSONObject): Prof {
         val name = pickStr(o, "name", "fname", "first_name", "nick", "nickname")
         val age = pickStr(o, "age", "years")
-        var from = pickStr(o, "bage", "age_from", "agefrom")
-        var to = pickStr(o, "tage", "age_to", "ageto")
+        val lf = prefs.getString("ageFromKey", "") ?: ""
+        val lt = prefs.getString("ageToKey", "") ?: ""
+        var from = if (lf.isNotEmpty()) findNested(o, listOf(lf), 0) else ""
+        var to = if (lt.isNotEmpty()) findNested(o, listOf(lt), 0) else ""
+        if (from.isEmpty()) from = pickStr(o, "bage", "age_from", "agefrom")
+        if (to.isEmpty()) to = pickStr(o, "tage", "age_to", "ageto")
         if (from.isEmpty()) from = findNested(o, listOf("bage", "age_from"), 0)
         if (to.isEmpty()) to = findNested(o, listOf("tage", "age_to"), 0)
         val city = pickStr(o, "city_n", "city_name")
         return Prof(name, age, from, to, city)
     }
 
-    // «Имя, 27 лет, ищет 25–35 лет»
+    // «Katerina, 30 лет — ищет от 29 до 40 лет»
     private fun fmtProf(p: Prof): String {
-        val seek = if (p.from.isEmpty() && p.to.isEmpty()) "?" else "${p.from.ifEmpty { "?" }}–${p.to.ifEmpty { "?" }}"
-        return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else "${p.age} лет"}, ищет $seek лет"
+        val seek = when {
+            p.from.isNotEmpty() && p.to.isNotEmpty() -> "ищет от ${p.from} до ${p.to} лет"
+            p.from.isNotEmpty() -> "ищет от ${p.from} лет"
+            p.to.isNotEmpty() -> "ищет до ${p.to} лет"
+            else -> "ищет: нет данных"
+        }
+        return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else "${p.age} лет"} — $seek"
     }
 
     // ---------- сохранение входа (cookie переживают перезапуск приложения) ----------
