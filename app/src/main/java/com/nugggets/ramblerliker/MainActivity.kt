@@ -47,7 +47,9 @@ private const val DEFAULT_LIMIT = 60
 private const val DEFAULT_FROM = 10
 private const val DEFAULT_TO = 20
 private const val MAX_PER_HOUR = 300
-private const val MAX_LIMIT = 300
+private const val MAX_LIMIT = 2000
+private const val DEFAULT_WIN_FROM = 9
+private const val DEFAULT_WIN_TO = 23
 private const val LOG_MAX = 500
 private var crashHookSet = false
 
@@ -104,6 +106,8 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var etLimit: EditText
     private lateinit var etFrom: EditText
+    private lateinit var etWinFrom: EditText
+    private lateinit var etWinTo: EditText
     private lateinit var etTo: EditText
     private lateinit var etLikeUrl: EditText
     private lateinit var tabBtns: List<Button>
@@ -169,7 +173,10 @@ class MainActivity : Activity() {
     private fun btn(t: String, f: () -> Unit) = Button(this).apply {
         text = t
         isAllCaps = false
-        textSize = 13f
+        textSize = 12f
+        minWidth = 0
+        minimumWidth = 0
+        setPadding(dp(2), 0, dp(2), 0)
         setOnClickListener { f() }
     }
 
@@ -289,6 +296,18 @@ class MainActivity : Activity() {
             setSingleLine()
             setText(prefs.getInt("hourTo", DEFAULT_TO).toString())
         }
+        etWinFrom = EditText(this).apply {
+            hint = "с (час)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+            setText(prefs.getInt("winFrom", DEFAULT_WIN_FROM).toString())
+        }
+        etWinTo = EditText(this).apply {
+            hint = "до (час)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+            setText(prefs.getInt("winTo", DEFAULT_WIN_TO).toString())
+        }
         etLikeUrl = EditText(this).apply {
             hint = "URL лайка"
             setSingleLine()
@@ -304,6 +323,8 @@ class MainActivity : Activity() {
                     addView(etLimit)
                     addView(TextView(this@MainActivity).apply { text = "Лайков в час: от и до (макс. $MAX_PER_HOUR):" })
                     addView(row(etFrom, etTo))
+                    addView(TextView(this@MainActivity).apply { text = "Окно работы по Москве, часы от и до (0 и 24 = круглосуточно):" })
+                    addView(row(etWinFrom, etWinTo))
                     addView(TextView(this@MainActivity).apply { text = "URL лайка ({login} подставляется сам):" })
                     addView(etLikeUrl)
                     addView(TextView(this@MainActivity).apply {
@@ -311,7 +332,7 @@ class MainActivity : Activity() {
                         text = "\nПриложение берёт анкеты из поиска сайта (с твоими фильтрами) и шлёт лайки " +
                             "напрямую. Каждый час выбирается случайная цель в диапазоне «от–до» лайков, паузы " +
                             "между лайками растягиваются на весь час; когда цель выполнена, приложение ждёт " +
-                            "до конца часа. Работа с 9:00 до 23:00 по Москве. Держи приложение открытым, экран включён, ты залогинен на " +
+                            "до конца часа. Лайки ставятся только в окне работы по Москве. Держи приложение открытым, экран включён, ты залогинен на " +
                             "вкладке «Браузер». Первый тест: лимит 3. При капче или предупреждении — «Стоп». " +
                             "Ставятся ли лайки, видно в шапке и на вкладке «Журнал»."
                     })
@@ -467,12 +488,18 @@ class MainActivity : Activity() {
         updateTop()
     }
 
+    private fun mskNow(): String {
+        val f = SimpleDateFormat("HH:mm", Locale.US)
+        f.timeZone = TimeZone.getTimeZone("Europe/Moscow")
+        return f.format(Date())
+    }
+
     private fun ago(sec: Long) = if (sec < 60) "$sec с" else "${sec / 60} мин"
 
     // Короткий ответ на главный вопрос: ставятся ли лайки
     private fun verdict(): String {
         if (!running) return if (sessLikes > 0) "■ остановлен, лайков за сессию: $sessLikes" else "■ остановлен"
-        if (nightLogged) return "🌙 жду окно работы 9:00–23:00 МСК"
+        if (nightLogged) return "🌙 вне окна ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК, сейчас ${mskNow()} МСК"
         if (rowErr > 0) return "⚠ ошибки подряд: $rowErr, ${lastError.take(60)}"
         if (hourTarget > 0 && hourCount >= hourTarget) return "⏸ норма часа выполнена ($hourCount из $hourTarget), жду"
         if (lastLikeAt == 0L) return "… ждём первый лайк"
@@ -481,7 +508,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.6  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.7  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -605,7 +632,12 @@ class MainActivity : Activity() {
         }
         val from = (etFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_FROM).coerceIn(1, MAX_PER_HOUR)
         val to = (etTo.text.toString().trim().toIntOrNull() ?: DEFAULT_TO).coerceIn(from, MAX_PER_HOUR)
-        prefs.edit().putInt("limit", lim).putInt("hourFrom", from).putInt("hourTo", to).putString("likeUrl", url).apply()
+        val wf = (etWinFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_FROM).coerceIn(0, 23)
+        val wt = (etWinTo.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_TO).coerceIn(wf + 1, 24)
+        prefs.edit().putInt("limit", lim).putInt("hourFrom", from).putInt("hourTo", to)
+            .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url).apply()
+        etWinFrom.setText(wf.toString())
+        etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())
         etFrom.setText(from.toString())
         etTo.setText(to.toString())
@@ -631,7 +663,7 @@ class MainActivity : Activity() {
         sessStart = SystemClock.elapsedRealtime()
         nextAt = 0L
         nightLogged = false
-        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, ${prefs.getInt("hourFrom", DEFAULT_FROM)}–${prefs.getInt("hourTo", DEFAULT_TO)} лайков в час, уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, ${prefs.getInt("hourFrom", DEFAULT_FROM)}–${prefs.getInt("hourTo", DEFAULT_TO)} лайков в час, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
         h.post(tick)
         updateStatus()
@@ -666,10 +698,12 @@ class MainActivity : Activity() {
             return
         }
         val hour = Calendar.getInstance(TimeZone.getTimeZone("Europe/Moscow")).get(Calendar.HOUR_OF_DAY)
-        if (hour < 9 || hour >= 23) {
+        val wf = prefs.getInt("winFrom", DEFAULT_WIN_FROM)
+        val wt = prefs.getInt("winTo", DEFAULT_WIN_TO)
+        if (hour < wf || hour >= wt) {
             if (!nightLogged) {
                 nightLogged = true
-                logMsg("🌙 Вне окна работы 9:00–23:00 МСК, жду")
+                logMsg("🌙 Вне окна работы $wf:00–$wt:00 МСК (сейчас ${mskNow()} МСК), жду. Окно можно поменять на вкладке «Лайки»")
             }
             nextAt = SystemClock.elapsedRealtime() + 30000
             updateStatus()
