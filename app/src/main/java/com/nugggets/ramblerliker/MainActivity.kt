@@ -44,6 +44,9 @@ private const val SITE = "https://m.dating.rambler.ru"
 private const val DEFAULT_LIKE_URL = "/api/a-likes?likes=1&login={login}&num=1"
 private const val DEFAULT_SBODY = "pol=1&bage=60&tage=99&purp=2&geo=3159%2C4312%2C4400&online=0"
 private const val DEFAULT_LIMIT = 60
+private const val DEFAULT_FROM = 10
+private const val DEFAULT_TO = 20
+private const val MAX_PER_HOUR = 300
 private const val MAX_LIMIT = 300
 private const val LOG_MAX = 500
 private var crashHookSet = false
@@ -100,6 +103,8 @@ class MainActivity : Activity() {
     private lateinit var recFilter: EditText
     private lateinit var status: TextView
     private lateinit var etLimit: EditText
+    private lateinit var etFrom: EditText
+    private lateinit var etTo: EditText
     private lateinit var etLikeUrl: EditText
     private lateinit var tabBtns: List<Button>
     private lateinit var logText: TextView
@@ -133,8 +138,9 @@ class MainActivity : Activity() {
     private var errors = 0
     private var rowErr = 0
     private var lastError = ""
-    private var sinceBreak = 0
-    private var breakAt = 10
+    private var hourStart = 0L
+    private var hourCount = 0
+    private var hourTarget = 0
     private var offset = 0
     private var hasMore = true
     private var likesLeft = -1
@@ -271,6 +277,18 @@ class MainActivity : Activity() {
             setSingleLine()
             setText(prefs.getInt("limit", DEFAULT_LIMIT).toString())
         }
+        etFrom = EditText(this).apply {
+            hint = "от"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+            setText(prefs.getInt("hourFrom", DEFAULT_FROM).toString())
+        }
+        etTo = EditText(this).apply {
+            hint = "до"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+            setText(prefs.getInt("hourTo", DEFAULT_TO).toString())
+        }
         etLikeUrl = EditText(this).apply {
             hint = "URL лайка"
             setSingleLine()
@@ -284,13 +302,16 @@ class MainActivity : Activity() {
                     addView(status)
                     addView(TextView(this@MainActivity).apply { text = "\nЛимит в сутки (макс. $MAX_LIMIT):" })
                     addView(etLimit)
+                    addView(TextView(this@MainActivity).apply { text = "Лайков в час: от и до (макс. $MAX_PER_HOUR):" })
+                    addView(row(etFrom, etTo))
                     addView(TextView(this@MainActivity).apply { text = "URL лайка ({login} подставляется сам):" })
                     addView(etLikeUrl)
                     addView(TextView(this@MainActivity).apply {
                         textSize = 12f
                         text = "\nПриложение берёт анкеты из поиска сайта (с твоими фильтрами) и шлёт лайки " +
-                            "напрямую. Паузы 8–25 сек, перерыв 2–6 мин каждые 8–15 лайков, работа с 9:00 до " +
-                            "23:00 по Москве. Держи приложение открытым, экран включён, ты залогинен на " +
+                            "напрямую. Каждый час выбирается случайная цель в диапазоне «от–до» лайков, паузы " +
+                            "между лайками растягиваются на весь час; когда цель выполнена, приложение ждёт " +
+                            "до конца часа. Работа с 9:00 до 23:00 по Москве. Держи приложение открытым, экран включён, ты залогинен на " +
                             "вкладке «Браузер». Первый тест: лимит 3. При капче или предупреждении — «Стоп». " +
                             "Ставятся ли лайки, видно в шапке и на вкладке «Журнал»."
                     })
@@ -453,13 +474,14 @@ class MainActivity : Activity() {
         if (!running) return if (sessLikes > 0) "■ остановлен, лайков за сессию: $sessLikes" else "■ остановлен"
         if (nightLogged) return "🌙 жду окно работы 9:00–23:00 МСК"
         if (rowErr > 0) return "⚠ ошибки подряд: $rowErr, ${lastError.take(60)}"
+        if (hourTarget > 0 && hourCount >= hourTarget) return "⏸ норма часа выполнена ($hourCount из $hourTarget), жду"
         if (lastLikeAt == 0L) return "… ждём первый лайк"
         return "✅ лайки ставятся, последний ${ago((SystemClock.elapsedRealtime() - lastLikeAt) / 1000)} назад"
     }
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.5  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.6  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -476,6 +498,7 @@ class MainActivity : Activity() {
         val mins = if (running) (SystemClock.elapsedRealtime() - sessStart) / 60000 else 0
         logStats.text = verdict() + "\n" + (if (running) "работает $mins мин" else "остановлен") +
             "\nлайков за сессию: $sessLikes, сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
+            "\nэтот час: ${hourInfo()}" +
             "\nв очереди: ${queue.size}, ошибок: $errors, следующее действие: ${nextInfo()}"
         val l = (if (onlyErr) logs.filter { it.contains("⚠") } else logs).takeLast(200).reversed()
         val t = if (l.isEmpty()) "Журнал пуст." else l.joinToString("\n")
@@ -580,8 +603,12 @@ class MainActivity : Activity() {
             toast("В URL лайка должно быть {login}")
             return false
         }
-        prefs.edit().putInt("limit", lim).putString("likeUrl", url).apply()
+        val from = (etFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_FROM).coerceIn(1, MAX_PER_HOUR)
+        val to = (etTo.text.toString().trim().toIntOrNull() ?: DEFAULT_TO).coerceIn(from, MAX_PER_HOUR)
+        prefs.edit().putInt("limit", lim).putInt("hourFrom", from).putInt("hourTo", to).putString("likeUrl", url).apply()
         etLimit.setText(lim.toString())
+        etFrom.setText(from.toString())
+        etTo.setText(to.toString())
         etLikeUrl.setText(url)
         toast("Сохранено")
         return true
@@ -604,7 +631,7 @@ class MainActivity : Activity() {
         sessStart = SystemClock.elapsedRealtime()
         nextAt = 0L
         nightLogged = false
-        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, ${prefs.getInt("hourFrom", DEFAULT_FROM)}–${prefs.getInt("hourTo", DEFAULT_TO)} лайков в час, уже сегодня ${prefs.getInt("count", 0)}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
         h.post(tick)
         updateStatus()
@@ -660,12 +687,44 @@ class MainActivity : Activity() {
             h.postDelayed(tick, 6000)
             return
         }
+        if (!hourOk()) {
+            val left = 3600000L - (SystemClock.elapsedRealtime() - hourStart) + 2000L + rnd.nextInt(30000)
+            logMsg("⏸ Норма часа выполнена ($hourCount из $hourTarget), жду следующего часа: ${left / 60000} мин")
+            nextAt = SystemClock.elapsedRealtime() + left
+            h.postDelayed(tick, left)
+            updateStatus()
+            return
+        }
         if (queue.isEmpty()) {
             fetchBatch()
         } else {
             sendLike(queue.removeFirst())
         }
         updateStatus()
+    }
+
+    private fun pickTarget(): Int {
+        val from = prefs.getInt("hourFrom", DEFAULT_FROM)
+        val to = maxOf(from, prefs.getInt("hourTo", DEFAULT_TO))
+        return from + rnd.nextInt(to - from + 1)
+    }
+
+    // true, если в текущем часе ещё можно ставить лайки
+    private fun hourOk(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (hourStart == 0L || now - hourStart >= 3600000L) {
+            hourStart = now
+            hourCount = 0
+            hourTarget = pickTarget()
+            logMsg("🕐 Новый час: цель $hourTarget лайков (диапазон ${prefs.getInt("hourFrom", DEFAULT_FROM)}–${prefs.getInt("hourTo", DEFAULT_TO)})")
+        }
+        return hourCount < hourTarget
+    }
+
+    private fun hourInfo(): String {
+        if (!running || hourTarget == 0) return "-"
+        val left = maxOf(0L, 3600000L - (SystemClock.elapsedRealtime() - hourStart)) / 60000
+        return "$hourCount из $hourTarget, до конца часа $left мин"
     }
 
     private fun fetchBatch() {
@@ -730,6 +789,7 @@ class MainActivity : Activity() {
             if (j.optInt("errno", -1) == 0) {
                 prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).apply()
                 sessLikes++
+                hourCount++
                 lastLikeAt = SystemClock.elapsedRealtime()
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
@@ -761,15 +821,17 @@ class MainActivity : Activity() {
     }
 
     private fun scheduleNext(extraSec: Int = 0, quick: Boolean = false) {
-        var d = if (quick) 1500L + rnd.nextInt(2000) else 8000L + rnd.nextInt(17000)
-        if (!quick) {
-            sinceBreak++
-            if (sinceBreak >= breakAt) {
-                d = 120000L + rnd.nextInt(240000)
-                logMsg("☕ Перерыв ${d / 1000} с (каждые $breakAt лайков)")
-                sinceBreak = 0
-                breakAt = 8 + rnd.nextInt(8)
-            }
+        var d: Long
+        if (quick) {
+            d = 1500L + rnd.nextInt(2000)
+        } else {
+            // растягиваем оставшиеся лайки часа на оставшееся время часа, с разбросом ±40%
+            val now = SystemClock.elapsedRealtime()
+            val remMs = maxOf(60000L, 3600000L - (now - hourStart))
+            val remLikes = maxOf(1, hourTarget - hourCount)
+            d = (remMs / remLikes * (0.6 + 0.8 * rnd.nextDouble())).toLong()
+            d = minOf(d, remMs)
+            d = maxOf(d, 8000L)
             if (extraSec > 0) {
                 val e = maxOf(d, minOf(extraSec, 900) * 1000L)
                 if (e > d) logMsg("⏳ Сайт просит подождать ${e / 1000} с")
@@ -786,6 +848,7 @@ class MainActivity : Activity() {
             "\nлайков сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
             "\nосталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}" +
             "\nлайков за сессию: $sessLikes" +
+            "\nэтот час: ${hourInfo()}" +
             "\nв очереди анкет: ${queue.size}" +
             "\nследующее действие: ${nextInfo()}" +
             "\nошибок: $errors" +
