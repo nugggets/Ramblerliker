@@ -3,6 +3,13 @@ package com.nugggets.ramblerliker
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Notification
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+import android.webkit.RenderProcessGoneDetail
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -53,6 +60,7 @@ private const val DEFAULT_WIN_TO = 23
 private const val LOG_MAX = 500
 private var crashHookSet = false
 private var cookiesRestored = false
+private var liveInstance: MainActivity? = null
 private const val REP_MAX = 3000
 private val COOKIE_URLS = listOf(
     "https://m.dating.rambler.ru/",
@@ -187,6 +195,8 @@ class MainActivity : Activity() {
     private var sessionGood = false
     private var authFails = 0
     private var autoOn = false
+    private var errLevel = 0
+    private var lastNotif = ""
     private lateinit var autoBtn: Button
     private var limitWait = false
     private var pauseUntil = 0L
@@ -230,11 +240,24 @@ class MainActivity : Activity() {
     private val seen = HashSet<String>()
 
     private val tick = Runnable { step() }
+    private val errResume = Runnable {
+        if (running) {
+            web.loadUrl(SITE)
+            nextAt = SystemClock.elapsedRealtime() + 8000
+            h.postDelayed(tick, 8000)
+        }
+    }
     private val uiTick = object : Runnable {
         override fun run() {
             if (curTab == 3) renderLog()
             if (curTab == 2) updateStatus()
             if (curTab == 4) renderReport()
+            if (running && !waiting && nextAt > 0L && SystemClock.elapsedRealtime() - nextAt > 300000L) {
+                logMsg("⚠ Цикл завис, перезапускаю")
+                h.removeCallbacks(tick)
+                h.post(tick)
+            }
+            updateNotif()
             updateTop()
             h.postDelayed(this, 3000)
         }
@@ -301,6 +324,8 @@ class MainActivity : Activity() {
             }
         }
         logMsg("Приложение открыто")
+        liveInstance?.let { if (it !== this) it.retire() }
+        liveInstance = this
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -439,6 +464,7 @@ class MainActivity : Activity() {
             }
             refreshAutoBtn()
             addView(autoBtn)
+            addView(btn("Фоновая работа: разрешить") { askBackground(true) })
             addView(btn("Скопировать сессию для сервера") { copySession() })
             addView(btn("Выйти из аккаунта (очистить сессию)") { clearSession() })
         }
@@ -522,6 +548,14 @@ class MainActivity : Activity() {
         show(0)
         updateStatus()
         h.postDelayed(uiTick, 3000)
+        if (prefs.getBoolean("wantRunning", false)) {
+            h.postDelayed({
+                if (!running) {
+                    logMsg("↻ Продолжаю работу после перезапуска приложения")
+                    startLikes()
+                }
+            }, 6000)
+        }
     }
 
     private fun setupWeb() {
@@ -541,6 +575,12 @@ class MainActivity : Activity() {
         cm.setAcceptThirdPartyCookies(web, true)
         web.addJavascriptInterface(Bridge(), "Rec")
         web.webViewClient = object : WebViewClient() {
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                logMsg("⚠ Процесс страницы упал, пересоздаю окно (работа продолжится сама)")
+                runOnUiThread { recreate() }
+                return true
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 view?.evaluateJavascript(HOOK_JS + API_JS, null)
                 view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
@@ -660,7 +700,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.14  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.15  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -829,6 +869,14 @@ class MainActivity : Activity() {
         nightLogged = false
         logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, ${prefs.getInt("perHour", DEFAULT_PER_HOUR)} лайков в час, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
+        prefs.edit().putBoolean("wantRunning", true).apply()
+        lastNotif = ""
+        errLevel = 0
+        logMsg(if (batteryOk()) "Батарея: без ограничений" else "⚠ Батарея ограничивает работу в фоне: нажми «Фоновая работа» на вкладке «Лайки»")
+        if (!batteryOk() && !prefs.getBoolean("batAsked", false)) {
+            prefs.edit().putBoolean("batAsked", true).apply()
+            askBackground(false)
+        }
         h.post(tick)
         updateStatus()
     }
@@ -843,6 +891,12 @@ class MainActivity : Activity() {
         waiting = false
         h.removeCallbacks(tick)
         h.removeCallbacks(wd)
+        h.removeCallbacks(errResume)
+        prefs.edit().putBoolean("wantRunning", false).apply()
+        try {
+            getSystemService(NotificationManager::class.java).cancel(2)
+        } catch (e: Exception) {
+        }
         stopService(Intent(this, KeepAliveService::class.java))
         if (reason != "остановлено") lastError = reason
         if (was) {
@@ -993,7 +1047,13 @@ class MainActivity : Activity() {
             rowErr = 0
             logMsg("🔎 Получено анкет: ${arr.length()}, новых для лайка: $added, в очереди: ${queue.size}, есть ещё: ${if (hasMore) "да" else "нет"}")
             if (added == 0 && !hasMore) {
-                stopLikes("анкеты закончились — поменяй фильтры поиска на сайте")
+                offset = 0
+                seen.clear()
+                hasMore = true
+                val d = 1800000L + rnd.nextInt(1800000)
+                logMsg("⏸ Анкеты в поиске закончились. Начну поиск заново через ${d / 60000} мин (фильтры можно поменять на сайте)")
+                nextAt = SystemClock.elapsedRealtime() + d
+                h.postDelayed(tick, d)
                 return
             }
             scheduleNext(quick = true)
@@ -1213,6 +1273,75 @@ class MainActivity : Activity() {
         return n
     }
 
+    private fun batteryOk(): Boolean {
+        return try {
+            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        } catch (e: Exception) {
+            true
+        }
+    }
+
+    private fun openAppSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        } catch (e: Exception) {
+        }
+    }
+
+    // Разрешение работать в фоне без ограничений батареи; force=true — по кнопке
+    private fun askBackground(force: Boolean) {
+        if (batteryOk()) {
+            if (force) {
+                toast("Ограничений батареи нет. Если телефон всё равно закрывает приложение, включи автозапуск и фоновую работу в настройках приложения")
+                openAppSettings()
+            }
+            return
+        }
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (e: Exception) {
+            openAppSettings()
+        }
+    }
+
+    // Статус в постоянном уведомлении (обновляется, только когда текст изменился)
+    private fun updateNotif() {
+        if (!running) return
+        val state = when {
+            limitWait && pauseUntil > SystemClock.elapsedRealtime() -> "пауза до $pauseClock"
+            nightLogged -> "вне окна работы"
+            autoOn -> "захожу в аккаунт"
+            else -> "работает"
+        }
+        val text = "$state · сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)} · этот час $hourCount из $hourTarget"
+        if (text == lastNotif) return
+        lastNotif = text
+        try {
+            val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val n = Notification.Builder(this, "liker")
+                .setContentTitle("Лайки идут")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_menu_send)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .build()
+            getSystemService(NotificationManager::class.java).notify(1, n)
+        } catch (e: Exception) {
+        }
+    }
+
+    // Старое окно (процесс жив, а Activity пересоздана): гасим его цикл, чтобы не было двух циклов лайков
+    private fun retire() {
+        h.removeCallbacksAndMessages(null)
+        running = false
+        waiting = false
+        try {
+            web.destroy()
+        } catch (e: Exception) {
+        }
+    }
+
     private fun autoFlag(): Boolean = autoOn || prefs.getBoolean("autoLogin", true)
 
     private fun pushAuto() {
@@ -1351,6 +1480,7 @@ class MainActivity : Activity() {
                 hourCount++
                 lastLikeAt = SystemClock.elapsedRealtime()
                 sessionGood = true
+                errLevel = 0
                 limitWait = false
                 authFails = 0
                 if (autoOn) {
@@ -1390,10 +1520,22 @@ class MainActivity : Activity() {
         lastError = msg
         logMsg("⚠ Ошибка (подряд $rowErr, всего $errors): $msg")
         if (rowErr >= 3) {
-            stopLikes("3 ошибки подряд: $msg")
+            errorPause(msg)
             return
         }
         scheduleNext()
+    }
+
+    // Серия ошибок (нет сети, сбой сайта): не останавливаемся, а ждём 5/10/20/30 минут и пробуем снова
+    private fun errorPause(msg: String) {
+        errLevel++
+        val min = minOf(30, 5 shl (errLevel - 1))
+        rowErr = 0
+        logMsg("⏸ Много ошибок подряд ($msg). Пауза $min мин, потом продолжу сам")
+        nextAt = SystemClock.elapsedRealtime() + min * 60000L
+        h.removeCallbacks(tick)
+        h.postDelayed(errResume, min * 60000L)
+        updateStatus()
     }
 
     // Лимит исчерпан: не останавливаемся, а засыпаем на случайные 1–4 часа
@@ -1446,9 +1588,10 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        h.removeCallbacks(uiTick)
-        logMsg("Окно приложения закрыто" + if (running) " (лайки были запущены)" else "")
+        if (!running) h.removeCallbacks(uiTick)
+        logMsg("Окно приложения закрыто" + if (running) " (лайки продолжают работать в фоне)" else "")
         super.onDestroy()
+        if (liveInstance === this && !running) liveInstance = null
     }
 
     override fun onPause() {
