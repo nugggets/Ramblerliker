@@ -109,6 +109,33 @@ private const val API_JS = """
 })();
 """
 
+// Автовход: нажимает «Войти» и «Продолжить» (только когда Kotlin включил window.__autoOn)
+private const val AUTO_JS = """
+(function(){
+ if(window.__auto) return; window.__auto=1;
+ var clicks=0, last=0;
+ function vis(e){ var r=e.getBoundingClientRect(); return r.width>0 && r.height>0 && getComputedStyle(e).visibility!=='hidden'; }
+ function txt(e){ return ((e.tagName==='INPUT')?(e.value||''):(e.innerText||e.textContent||'')).replace(/\s+/g,' ').trim(); }
+ function tryClick(){
+  if(!window.__autoOn) return;
+  if(!/(^|\.)(rambler\.ru|sber\.ru|sberbank\.ru|sberid\.ru)$/.test(location.hostname)) return;
+  var now=Date.now(); if(now-last<2500||clicks>=8) return;
+  var els=document.querySelectorAll('button,a,[role=button],input[type=submit],input[type=button],[class*=button],[class*=Button],[class*=btn],[class*=Btn]');
+  for(var i=0;i<els.length;i++){
+   var e=els[i]; var t=txt(e);
+   if(!t||t.length>40) continue;
+   if(/^(войти|продолжить)$/i.test(t)||/^продолжить как /i.test(t)){
+    if(!vis(e)) continue;
+    last=now; clicks++;
+    try{Rec.autoClick(t,location.hostname)}catch(x){}
+    e.click(); return;
+   }
+  }
+ }
+ setInterval(tryClick,1500);
+})();
+"""
+
 class MainActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var prefs: SharedPreferences
@@ -136,6 +163,11 @@ class MainActivity : Activity() {
     private var onlyToday = true
     private var sessionGood = false
     private var authFails = 0
+    private var autoOn = false
+    private var limitWait = false
+    private var pauseUntil = 0L
+    private var pauseClock = ""
+    private var authStart = 0L
     private var lastCookieSave = 0L
     private var cookieSaveLogged = false
     private var keysLogged = false
@@ -475,11 +507,11 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(Bridge(), "Rec")
         web.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                view?.evaluateJavascript(HOOK_JS + API_JS, null)
+                view?.evaluateJavascript(HOOK_JS + API_JS + AUTO_JS + "window.__autoOn=" + autoOn + ";", null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
-                view?.evaluateJavascript(HOOK_JS + API_JS, null)
+                view?.evaluateJavascript(HOOK_JS + API_JS + AUTO_JS + "window.__autoOn=" + autoOn + ";", null)
                 CookieManager.getInstance().flush()
                 logMsg("Страница загружена: ${(url ?: "").substringBefore('?').take(70)}")
             }
@@ -513,6 +545,11 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun apiLike(login: String, text: String) {
             runOnUiThread { onLike(login, text) }
+        }
+
+        @JavascriptInterface
+        fun autoClick(t: String, host: String) {
+            runOnUiThread { logMsg("🖱 Автовход: нажал «$t» ($host)") }
         }
 
         @JavascriptInterface
@@ -570,8 +607,9 @@ class MainActivity : Activity() {
     // Короткий ответ на главный вопрос: ставятся ли лайки
     private fun verdict(): String {
         if (!running) return if (sessLikes > 0) "■ остановлен, лайков за сессию: $sessLikes" else "■ остановлен"
+        if (limitWait && pauseUntil > SystemClock.elapsedRealtime()) return "⏸ лимит исчерпан, продолжу около $pauseClock"
         if (nightLogged) return "🌙 вне окна ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК, сейчас ${mskNow()} МСК"
-        if (authFails in 1..2 && !sessionGood) return "🔑 вход слетел, восстанавливаю (попытка $authFails из 2)"
+        if (autoOn) return "🔑 вход слетел, захожу сам (попытка $authFails из 4)"
         if (rowErr > 0) return "⚠ ошибки подряд: $rowErr, ${lastError.take(60)}"
         if (hourTarget > 0 && hourCount >= hourTarget) return "⏸ норма часа выполнена ($hourCount из $hourTarget), жду"
         if (lastLikeAt == 0L) return "… ждём первый лайк"
@@ -580,14 +618,14 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.10  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.12  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
         if (!running) return "-"
         if (waiting) return "ждём ответ сайта"
         val left = (nextAt - SystemClock.elapsedRealtime()) / 1000
-        return if (left > 0) "через $left с" else "сейчас"
+        return if (left > 3600) "через ${left / 3600} ч ${left % 3600 / 60} мин" else if (left > 120) "через ${left / 60} мин" else if (left > 0) "через $left с" else "сейчас"
     }
 
     private fun logPlain(): String =
@@ -753,6 +791,9 @@ class MainActivity : Activity() {
     private fun stopLikes(reason: String) {
         val was = running
         running = false
+        limitWait = false
+        pauseUntil = 0L
+        setAuto(false)
         nextAt = 0L
         waiting = false
         h.removeCallbacks(tick)
@@ -772,10 +813,14 @@ class MainActivity : Activity() {
         if (prefs.getString("day", "") != today) {
             if (!prefs.getString("day", "").isNullOrEmpty()) logMsg("Новый день, счётчик лайков сброшен")
             prefs.edit().putString("day", today).putInt("count", 0).apply()
+            if (limitWait) {
+                limitPause("Лимит обновился, сразу не начинаю", false)
+                return
+            }
         }
         val limit = prefs.getInt("limit", DEFAULT_LIMIT)
         if (prefs.getInt("count", 0) >= limit) {
-            stopLikes("дневной лимит достигнут")
+            limitPause("Дневной лимит $limit достигнут")
             return
         }
         val hour = Calendar.getInstance(TimeZone.getTimeZone("Europe/Moscow")).get(Calendar.HOUR_OF_DAY)
@@ -794,6 +839,20 @@ class MainActivity : Activity() {
         if (nightLogged) {
             nightLogged = false
             logMsg("☀ Окно работы открылось, продолжаю")
+        }
+        if (autoOn) {
+            if (SystemClock.elapsedRealtime() - authStart > 150000L) {
+                setAuto(false)
+                logMsg("🔒 Автовход не завершился за 2.5 минуты")
+                stopLikes("не удалось войти автоматически: войди вручную во вкладке «Браузер» и нажми «Старт»")
+                return
+            }
+            if (web.url?.startsWith(SITE) != true) {
+                nextAt = SystemClock.elapsedRealtime() + 5000
+                h.postDelayed(tick, 5000)
+                updateStatus()
+                return
+            }
         }
         if (web.url?.startsWith(SITE) != true) {
             logMsg("Страница не на сайте Rambler, загружаю заново")
@@ -1060,23 +1119,37 @@ class MainActivity : Activity() {
         return n
     }
 
-    // errno=24 на лайке: вход слетел. Пробуем вернуть сохранённую сессию и продолжить
+    private fun setAuto(on: Boolean) {
+        if (on && !autoOn) authStart = SystemClock.elapsedRealtime()
+        autoOn = on
+        try {
+            web.evaluateJavascript("window.__autoOn=" + on + ";", null)
+        } catch (e: Exception) {
+        }
+    }
+
+    // errno=24 на лайке: вход слетел. Возвращаем сохранённую сессию и сами проходим вход («Войти», «Продолжить»)
     private fun onAuthLost(login: String) {
         sessionGood = false
         authFails++
         errors++
         lastError = "errno=24 (вход слетел?)"
-        val n = if (authFails <= 2) restoreCookies() else 0
-        if (n == 0) {
-            logMsg("🔒 errno=24: вход слетел, восстановить не удалось")
-            stopLikes("слетел вход (errno=24): войди во вкладке «Браузер» и нажми «Старт»")
+        if (authFails > 4) {
+            setAuto(false)
+            logMsg("🔒 Не удалось войти автоматически (попыток: ${authFails - 1})")
+            stopLikes("слетел вход (errno=24): войди вручную во вкладке «Браузер» и нажми «Старт»")
             return
         }
-        logMsg("⚠ errno=24, похоже слетел вход. Восстанавливаю сохранённую сессию (cookie: $n), попытка $authFails из 2")
+        setAuto(true)
+        logMsg("⚠ errno=24, похоже слетел вход. Захожу сам: нажимаю «Войти» / «Продолжить», попытка $authFails из 4")
+        if (authFails == 1) {
+            val n = restoreCookies()
+            if (n > 0) logMsg("🔑 Вернул сохранённую сессию (cookie: $n)")
+            web.loadUrl(SITE)
+        }
         queue.addFirst(login)
-        web.loadUrl(SITE)
-        nextAt = SystemClock.elapsedRealtime() + 10000
-        h.postDelayed(tick, 10000)
+        nextAt = SystemClock.elapsedRealtime() + 25000
+        h.postDelayed(tick, 25000)
         updateStatus()
     }
 
@@ -1174,7 +1247,13 @@ class MainActivity : Activity() {
                 hourCount++
                 lastLikeAt = SystemClock.elapsedRealtime()
                 sessionGood = true
+                limitWait = false
                 authFails = 0
+                if (autoOn) {
+                    setAuto(false)
+                    saveCookies()
+                    logMsg("✅ Вход восстановлен, продолжаю")
+                }
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
                 logMsg("❤ Лайк ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}: ${profInfo[login]?.let { fmtProf(it) } ?: "данных анкеты нет"} ($login), осталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}")
@@ -1182,7 +1261,7 @@ class MainActivity : Activity() {
                 addReport(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
                 if (j.has("likesleft") && likesLeft <= 0) {
-                    stopLikes("лайки на сегодня закончились (по данным сайта)")
+                    limitPause("Лайки у сайта закончились")
                     return
                 }
                 scheduleNext(extraSec = j.optInt("likestimeout", 0))
@@ -1197,6 +1276,11 @@ class MainActivity : Activity() {
     }
 
     private fun handleError(msg: String) {
+        if (likesLeft == 0) {
+            logMsg("⚠ $msg")
+            limitPause("Лайки у сайта закончились")
+            return
+        }
         errors++
         rowErr++
         lastError = msg
@@ -1206,6 +1290,19 @@ class MainActivity : Activity() {
             return
         }
         scheduleNext()
+    }
+
+    // Лимит исчерпан: не останавливаемся, а засыпаем на случайные 1–4 часа
+    private fun limitPause(reason: String, again: Boolean = true) {
+        limitWait = again
+        val d = 3600000L + rnd.nextInt(3 * 3600000 + 1)
+        pauseUntil = SystemClock.elapsedRealtime() + d
+        pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(System.currentTimeMillis() + d))
+        logMsg("⏸ $reason. Продолжу через ${d / 3600000} ч ${d % 3600000 / 60000} мин (около $pauseClock)")
+        nextAt = SystemClock.elapsedRealtime() + d
+        h.removeCallbacks(tick)
+        h.postDelayed(tick, d)
+        updateStatus()
     }
 
     private fun scheduleNext(extraSec: Int = 0, quick: Boolean = false) {
