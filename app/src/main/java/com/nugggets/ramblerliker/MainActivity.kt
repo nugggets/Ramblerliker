@@ -109,27 +109,50 @@ private const val API_JS = """
 })();
 """
 
-// Автовход: нажимает «Войти» и «Продолжить» (только когда Kotlin включил window.__autoOn)
+// Автовход: нажимает «Войти» и «Продолжить» на страницах rambler.ru / sber.ru, когда включён window.__autoOn
 private const val AUTO_JS = """
 (function(){
  if(window.__auto) return; window.__auto=1;
- var clicks=0, last=0;
+ var clicks=0, last=0, lastInfo=0, infos=0;
+ var SEL='button,a,[role=button],input[type=submit],input[type=button],[class*=button],[class*=Button],[class*=btn],[class*=Btn]';
+ var BAD=/(через|с помощью|vk|google|apple|яндекс|yandex|mail|facebook|телефон|регистр|создать|без )/i;
  function vis(e){ var r=e.getBoundingClientRect(); return r.width>0 && r.height>0 && getComputedStyle(e).visibility!=='hidden'; }
  function txt(e){ return ((e.tagName==='INPUT')?(e.value||''):(e.innerText||e.textContent||'')).replace(/\s+/g,' ').trim(); }
+ function ok(t){
+  if(!t||t.length>40) return false;
+  if(/^войти( в (аккаунт|профиль))?$/i.test(t)) return true;
+  if(/^продолжить/i.test(t) && !BAD.test(t)) return true;
+  return false;
+ }
+ function fire(e){
+  try{ e.scrollIntoView({block:'center'}); }catch(x){}
+  var r=e.getBoundingClientRect(), cx=r.left+r.width/2, cy=r.top+r.height/2;
+  var o={bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy};
+  ['pointerdown','mousedown','pointerup','mouseup'].forEach(function(n){
+   try{ e.dispatchEvent(n.indexOf('pointer')===0 ? new PointerEvent(n,o) : new MouseEvent(n,o)); }catch(z){}
+  });
+  e.click();
+ }
  function tryClick(){
   if(!window.__autoOn) return;
   if(!/(^|\.)(rambler\.ru|sber\.ru|sberbank\.ru|sberid\.ru)$/.test(location.hostname)) return;
-  var now=Date.now(); if(now-last<2500||clicks>=8) return;
-  var els=document.querySelectorAll('button,a,[role=button],input[type=submit],input[type=button],[class*=button],[class*=Button],[class*=btn],[class*=Btn]');
+  var now=Date.now();
+  var els=document.querySelectorAll(SEL), seen=[], hit=null;
   for(var i=0;i<els.length;i++){
-   var e=els[i]; var t=txt(e);
-   if(!t||t.length>40) continue;
-   if(/^(войти|продолжить)$/i.test(t)||/^продолжить как /i.test(t)){
-    if(!vis(e)) continue;
-    last=now; clicks++;
-    try{Rec.autoClick(t,location.hostname)}catch(x){}
-    e.click(); return;
-   }
+   var e=els[i], t=txt(e);
+   if(!t||t.length>40||!vis(e)) continue;
+   if(seen.length<12 && seen.indexOf(t)<0) seen.push(t);
+   if(!hit && ok(t)) hit=[e,t];
+  }
+  if(hit && now-last>=2500 && clicks<8){
+   last=now; clicks++;
+   try{Rec.autoClick(hit[1],location.hostname)}catch(x){}
+   fire(hit[0]); return;
+  }
+  var diag = window.__autoDiag || location.hostname.indexOf('dating.rambler.ru')<0;
+  if(!hit && diag && infos<6 && now-lastInfo>8000){
+   lastInfo=now; infos++;
+   try{Rec.autoInfo(location.hostname+' | кнопки: '+(seen.join(' ; ')||'нет')+' | iframe: '+document.querySelectorAll('iframe').length)}catch(x){}
   }
  }
  setInterval(tryClick,1500);
@@ -164,6 +187,7 @@ class MainActivity : Activity() {
     private var sessionGood = false
     private var authFails = 0
     private var autoOn = false
+    private lateinit var autoBtn: Button
     private var limitWait = false
     private var pauseUntil = 0L
     private var pauseClock = ""
@@ -405,6 +429,17 @@ class MainActivity : Activity() {
             addView(likesScroll, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(row(btn("▶ Старт") { startLikes() }, btn("■ Стоп") { stopLikes("остановлено") }))
             addView(row(btn("Сохранить") { saveSettings() }, btn("URL по умолчанию") { etLikeUrl.setText(DEFAULT_LIKE_URL) }))
+            autoBtn = btn("") {}
+            autoBtn.setOnClickListener {
+                val on = !prefs.getBoolean("autoLogin", true)
+                prefs.edit().putBoolean("autoLogin", on).apply()
+                refreshAutoBtn()
+                pushAuto()
+                logMsg(if (on) "Автовход включён: сам нажимаю «Войти» и «Продолжить»" else "Автовход выключен")
+            }
+            refreshAutoBtn()
+            addView(autoBtn)
+            addView(btn("Скопировать сессию для сервера") { copySession() })
             addView(btn("Выйти из аккаунта (очистить сессию)") { clearSession() })
         }
 
@@ -507,11 +542,13 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(Bridge(), "Rec")
         web.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                view?.evaluateJavascript(HOOK_JS + API_JS + AUTO_JS + "window.__autoOn=" + autoOn + ";", null)
+                view?.evaluateJavascript(HOOK_JS + API_JS, null)
+                view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
-                view?.evaluateJavascript(HOOK_JS + API_JS + AUTO_JS + "window.__autoOn=" + autoOn + ";", null)
+                view?.evaluateJavascript(HOOK_JS + API_JS, null)
+                view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
                 CookieManager.getInstance().flush()
                 logMsg("Страница загружена: ${(url ?: "").substringBefore('?').take(70)}")
             }
@@ -545,6 +582,11 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun apiLike(login: String, text: String) {
             runOnUiThread { onLike(login, text) }
+        }
+
+        @JavascriptInterface
+        fun autoInfo(t: String) {
+            runOnUiThread { logMsg("🖱 Автовход: кнопки «Войти»/«Продолжить» не вижу. $t") }
         }
 
         @JavascriptInterface
@@ -618,7 +660,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.12  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.14  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -677,8 +719,11 @@ class MainActivity : Activity() {
         CookieManager.getInstance().flush()
         WebStorage.getInstance().deleteAllData()
         web.clearCache(true)
+        prefs.edit().putBoolean("autoLogin", false).apply()
+        refreshAutoBtn()
+        pushAuto()
         web.loadUrl(SITE)
-        logMsg("Сессия очищена (cookie и данные сайта удалены)")
+        logMsg("Сессия очищена (cookie и данные сайта удалены). Автовход выключен, чтобы не войти сразу обратно: включи его кнопкой на вкладке «Лайки»")
         toast("Сессия очищена")
     }
 
@@ -1057,6 +1102,20 @@ class MainActivity : Activity() {
         return Prof(name, age, from, to, city)
     }
 
+    private fun yearsText(a: String): String {
+        val n = a.toIntOrNull() ?: return "$a лет"
+        val w = if (n % 100 in 11..14) {
+            "лет"
+        } else {
+            when (n % 10) {
+                1 -> "год"
+                2, 3, 4 -> "года"
+                else -> "лет"
+            }
+        }
+        return "$n $w"
+    }
+
     // «Katerina, 30 лет — ищет от 29 до 40 лет»
     private fun fmtProf(p: Prof): String {
         val seek = when {
@@ -1065,10 +1124,45 @@ class MainActivity : Activity() {
             p.to.isNotEmpty() -> "ищет до ${p.to} лет"
             else -> "ищет: нет данных"
         }
-        return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else "${p.age} лет"} — $seek"
+        return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)} — $seek"
     }
 
     // ---------- сохранение входа (cookie переживают перезапуск приложения) ----------
+    // Сессия для сервера: cookie + настройки поиска и лайка одним JSON (вставить боту после /cookies)
+    private fun copySession() {
+        try {
+            val cm = CookieManager.getInstance()
+            val m = LinkedHashMap<String, String>()
+            for (u in COOKIE_URLS) {
+                val c = cm.getCookie(u) ?: continue
+                for (part in c.split(";")) {
+                    val t = part.trim()
+                    val i = t.indexOf('=')
+                    if (i <= 0) continue
+                    m[t.substring(0, i)] = t.substring(i + 1)
+                }
+            }
+            if (m.isEmpty()) {
+                toast("Нет cookie: сначала войди во вкладке «Браузер»")
+                return
+            }
+            val cj = JSONObject()
+            for ((k, v) in m) cj.put(k, v)
+            val j = JSONObject()
+            j.put("cookies", cj)
+            j.put("sbody", (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY })
+            j.put("like_url", prefs.getString("likeUrl", DEFAULT_LIKE_URL) ?: DEFAULT_LIKE_URL)
+            j.put("ua", web.settings.userAgentString)
+            j.put("age_from_key", prefs.getString("ageFromKey", "") ?: "")
+            j.put("age_to_key", prefs.getString("ageToKey", "") ?: "")
+            val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cb.setPrimaryClip(ClipData.newPlainText("session", j.toString()))
+            toast("Сессия скопирована. Отправь боту /cookies и вставь её")
+        } catch (e: Exception) {
+            toast("Не получилось: ${e.message}")
+        }
+    }
+
     private fun saveCookies() {
         try {
             val cm = CookieManager.getInstance()
@@ -1119,13 +1213,23 @@ class MainActivity : Activity() {
         return n
     }
 
+    private fun autoFlag(): Boolean = autoOn || prefs.getBoolean("autoLogin", true)
+
+    private fun pushAuto() {
+        try {
+            web.evaluateJavascript("window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun refreshAutoBtn() {
+        autoBtn.text = if (prefs.getBoolean("autoLogin", true)) "Автовход: вкл" else "Автовход: выкл"
+    }
+
     private fun setAuto(on: Boolean) {
         if (on && !autoOn) authStart = SystemClock.elapsedRealtime()
         autoOn = on
-        try {
-            web.evaluateJavascript("window.__autoOn=" + on + ";", null)
-        } catch (e: Exception) {
-        }
+        pushAuto()
     }
 
     // errno=24 на лайке: вход слетел. Возвращаем сохранённую сессию и сами проходим вход («Войти», «Продолжить»)
