@@ -62,6 +62,7 @@ private var crashHookSet = false
 private var cookiesRestored = false
 private var liveInstance: MainActivity? = null
 private const val REP_MAX = 3000
+private const val LIKED_MAX = 20000
 private val COOKIE_URLS = listOf(
     "https://m.dating.rambler.ru/",
     "https://dating.rambler.ru/",
@@ -84,7 +85,11 @@ private const val HOOK_JS = """
    var m=(init&&init.method)||(i&&i.method)||'GET';
    var b=(init&&init.body)||'';
    return of.apply(this,arguments).then(function(r){
-     try{ r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:String(b).slice(0,1000),r:t.slice(0,4000)}); }); }catch(e){}
+     try{
+       var ct=(r.headers&&r.headers.get('content-type'))||'';
+       if(/image|font|video|audio|octet|pdf/i.test(ct)){ send({m:m,u:url,s:r.status,p:'',r:''}); return r; }
+       r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:String(b).slice(0,1000),r:t.slice(0,4000)}); });
+     }catch(e){}
      return r; });
  }; }
  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
@@ -142,7 +147,7 @@ private const val AUTO_JS = """
   e.click();
  }
  function tryClick(){
-  if(!window.__autoOn) return;
+  if(!window.__autoOn || document.hidden) return;
   if(!/(^|\.)(rambler\.ru|sber\.ru|sberbank\.ru|sberid\.ru)$/.test(location.hostname)) return;
   var now=Date.now();
   var els=document.querySelectorAll(SEL), seen=[], hit=null;
@@ -242,13 +247,27 @@ class MainActivity : Activity() {
     private var likesLeft = -1
     private val queue = ArrayDeque<String>()
     private val seen = HashSet<String>()
+    private val liked = LinkedHashSet<String>()   // уже лайкнутые анкеты, переживает перезапуск
+    private lateinit var likedFile: File
+    private var inflight = ""      // анкета, на которую сейчас идёт запрос лайка
+    private var inflightKind = 0   // 0 нет, 1 поиск, 2 лайк
+    private val verName: String by lazy {
+        try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
+    }
 
     private val tick = Runnable { step() }
+    // Единственный способ запланировать шаг: всегда ровно один цикл, дублей не бывает
+    private fun post(d: Long) {
+        h.removeCallbacks(tick)
+        h.removeCallbacks(errResume)
+        h.postDelayed(tick, d)
+    }
+
     private val errResume = Runnable {
         if (running) {
             web.loadUrl(SITE)
             nextAt = SystemClock.elapsedRealtime() + 8000
-            h.postDelayed(tick, 8000)
+            post(8000)
         }
     }
     private val uiTick = object : Runnable {
@@ -258,8 +277,7 @@ class MainActivity : Activity() {
             if (curTab == 4) renderReport()
             if (running && !waiting && nextAt > 0L && SystemClock.elapsedRealtime() - nextAt > 300000L) {
                 logMsg("⚠ Цикл завис, перезапускаю")
-                h.removeCallbacks(tick)
-                h.post(tick)
+                post(0)
             }
             updateNotif()
             updateTop()
@@ -269,6 +287,8 @@ class MainActivity : Activity() {
     private val wd = Runnable {
         if (waiting && running) {
             waiting = false
+            if (inflightKind == 2 && inflight.isNotEmpty()) queue.addFirst(inflight)
+            inflightKind = 0
             web.reload()
             handleError("нет ответа от страницы")
         }
@@ -301,6 +321,13 @@ class MainActivity : Activity() {
         logFile = File(filesDir, "liker.log")
         try {
             if (logFile.exists()) logs.addAll(logFile.readLines().takeLast(LOG_MAX))
+        } catch (e: Exception) {
+        }
+        likedFile = File(filesDir, "liked.txt")
+        try {
+            if (likedFile.exists()) {
+                for (l in likedFile.readLines().takeLast(LIKED_MAX)) if (l.isNotBlank()) liked.add(l.trim())
+            }
         } catch (e: Exception) {
         }
         repFile = File(filesDir, "likes_report.tsv")
@@ -336,6 +363,7 @@ class MainActivity : Activity() {
             nmc.cancel(3)
         } catch (e: Exception) {
         }
+        loadSearch()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -464,6 +492,11 @@ class MainActivity : Activity() {
             addView(likesScroll, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(row(btn("▶ Старт") { startLikes() }, btn("■ Стоп") { stopLikes("остановлено") }))
             addView(row(btn("Сохранить") { saveSettings() }, btn("URL по умолчанию") { etLikeUrl.setText(DEFAULT_LIKE_URL) }))
+            addView(btn("Начать поиск анкет с начала") {
+                resetSearch(false)
+                logMsg("🔄 Поиск сброшен вручную: следующий запрос с первой анкеты (уже лайкнутые, ${liked.size}, пропускаются)")
+                toast("Поиск сброшен")
+            })
             autoBtn = btn("") {}
             autoBtn.setOnClickListener {
                 val on = !prefs.getBoolean("autoLogin", true)
@@ -615,7 +648,8 @@ class MainActivity : Activity() {
                 o.put("t", SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()))
                 // запоминаем фильтры поиска, которые шлёт сам сайт
                 if (o.optString("u").contains("/api/a-search") && o.optString("p").contains("pol=")) {
-                    prefs.edit().putString("sbody", o.optString("p")).apply()
+                    val nb = o.optString("p")
+                    if (prefs.getString("sbody", "") != nb) prefs.edit().putString("sbody", nb).apply()
                 }
                 runOnUiThread {
                     rec.add(o)
@@ -648,8 +682,11 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun apiErr(kind: String, msg: String) {
             runOnUiThread {
+                if (!waiting) return@runOnUiThread
                 h.removeCallbacks(wd)
                 waiting = false
+                if (inflightKind == 2 && inflight.isNotEmpty()) queue.addFirst(inflight)
+                inflightKind = 0
                 if (running) handleError("$kind: $msg")
             }
         }
@@ -710,7 +747,8 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.17  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        val t = "RamblerLiker $verName  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        if (topBar.text.toString() != t) topBar.text = t
     }
 
     private fun nextInfo(): String {
@@ -761,6 +799,7 @@ class MainActivity : Activity() {
 
     private fun clearSession() {
         stopLikes("остановлено")
+        resetSearch(true)
         CookieManager.getInstance().removeAllCookies(null)
         prefs.edit().remove("cookies").apply()
         sessionGood = false
@@ -836,7 +875,7 @@ class MainActivity : Activity() {
     }
 
     // ---------- лайки через API ----------
-    private fun saveSettings(): Boolean {
+    private fun saveSettings(silent: Boolean = false): Boolean {
         val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
         val url = etLikeUrl.text.toString().trim().ifEmpty { DEFAULT_LIKE_URL }
         if (!url.contains("{login}")) {
@@ -853,23 +892,19 @@ class MainActivity : Activity() {
         etLimit.setText(lim.toString())
         etRate.setText(rateText())
         etLikeUrl.setText(url)
-        toast("Сохранено")
+        if (!silent) toast("Сохранено")
         return true
     }
 
     private fun startLikes() {
         if (running) return
-        if (!saveSettings()) return
+        if (!saveSettings(true)) return
         running = true
         waiting = false
         errors = 0
         rowErr = 0
         lastError = ""
-        offset = 0
         hasMore = true
-        queue.clear()
-        seen.clear()
-        profInfo.clear()
         keysLogged = false
         sessLikes = 0
         aggCount = 0
@@ -880,6 +915,7 @@ class MainActivity : Activity() {
         nextAt = 0L
         nightLogged = false
         logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, темп ${rateText()} лайков в минуту, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("🔎 Продолжаю поиск с анкеты №$offset, в очереди: ${queue.size}, уже лайкнуто ранее: ${liked.size}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
         prefs.edit().putBoolean("wantRunning", true).apply()
         lastNotif = ""
@@ -890,13 +926,15 @@ class MainActivity : Activity() {
             prefs.edit().putBoolean("batAsked", true).apply()
             askBackground(false)
         }
-        h.post(tick)
+        post(0)
         updateStatus()
     }
 
     private fun stopLikes(reason: String) {
         val was = running
         running = false
+        if (waiting && inflightKind == 2 && inflight.isNotEmpty() && !liked.contains(inflight)) queue.addFirst(inflight)
+        saveSearch()
         limitWait = false
         pauseUntil = 0L
         setAuto(false)
@@ -945,7 +983,7 @@ class MainActivity : Activity() {
             }
             nextAt = SystemClock.elapsedRealtime() + 30000
             updateStatus()
-            h.postDelayed(tick, 30000)
+            post(30000)
             return
         }
         if (nightLogged) {
@@ -959,7 +997,7 @@ class MainActivity : Activity() {
             }
             if (web.url?.startsWith(SITE) != true) {
                 nextAt = SystemClock.elapsedRealtime() + 5000
-                h.postDelayed(tick, 5000)
+                post(5000)
                 updateStatus()
                 return
             }
@@ -968,15 +1006,21 @@ class MainActivity : Activity() {
             logMsg("Страница не на сайте Rambler, загружаю заново")
             web.loadUrl(SITE)
             nextAt = SystemClock.elapsedRealtime() + 6000
-            h.postDelayed(tick, 6000)
+            post(6000)
             return
         }
         hourOk()
-        if (queue.isEmpty()) {
-            fetchBatch()
-        } else {
-            sendLike(queue.removeFirst())
+        var next: String? = null
+        while (queue.isNotEmpty()) {
+            val c = queue.removeFirst()
+            if (liked.contains(c)) {
+                profInfo.remove(c)
+            } else {
+                next = c
+                break
+            }
         }
+        if (next == null) fetchBatch() else sendLike(next)
         updateStatus()
     }
 
@@ -996,8 +1040,17 @@ class MainActivity : Activity() {
     }
 
     private fun fetchBatch() {
-        val body = (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY }
+        val body = curBody()
+        if (prefs.getString("offBody", "") != body && offset > 0) {
+            logMsg("🔎 Фильтры поиска изменились, начинаю с первой анкеты")
+            offset = 0
+            queue.clear()
+            seen.clear()
+            profInfo.clear()
+        }
         waiting = true
+        inflightKind = 1
+        inflight = ""
         logMsg("🔎 Запрашиваю анкеты из поиска (offset=$offset)")
         h.postDelayed(wd, 20000)
         web.evaluateJavascript("window.__lk && window.__lk.batch($offset, ${JSONObject.quote(body)});", null)
@@ -1007,6 +1060,8 @@ class MainActivity : Activity() {
         val tmpl = prefs.getString("likeUrl", DEFAULT_LIKE_URL) ?: DEFAULT_LIKE_URL
         val url = tmpl.replace("{login}", URLEncoder.encode(login, "UTF-8"))
         waiting = true
+        inflight = login
+        inflightKind = 2
         likeSentAt = SystemClock.elapsedRealtime()
         h.postDelayed(wd, 20000)
         web.evaluateJavascript(
@@ -1015,8 +1070,10 @@ class MainActivity : Activity() {
     }
 
     private fun onBatch(text: String) {
+        if (!waiting || inflightKind != 1) return // запоздалый или чужой ответ
         h.removeCallbacks(wd)
         waiting = false
+        inflightKind = 0
         if (!running) return
         try {
             val j = JSONObject(text)
@@ -1038,7 +1095,7 @@ class MainActivity : Activity() {
                     logMsg("🔎 Поля анкеты: ${keys.joinToString(", ")}")
                     logMsg("   пример: ${o.toString().replace(lg, mask(lg)).take(600)}")
                 }
-                if (o.optInt("own_like", 0) == 0 && seen.add(lg)) {
+                if (o.optInt("own_like", 0) == 0 && !liked.contains(lg) && seen.add(lg)) {
                     queue.addLast(lg)
                     profInfo[lg] = profileInfo(o)
                     added++
@@ -1055,12 +1112,85 @@ class MainActivity : Activity() {
                 val d = 1800000L + rnd.nextInt(1800000)
                 logMsg("⏸ Анкеты в поиске закончились. Начну поиск заново через ${d / 60000} мин (фильтры можно поменять на сайте)")
                 nextAt = SystemClock.elapsedRealtime() + d
-                h.postDelayed(tick, d)
+                saveSearch()
+                post(d)
                 return
             }
-            scheduleNext(quick = true)
+            saveSearch()
+            scheduleNext(quick = true, empty = added == 0)
         } catch (e: Exception) {
             handleError("поиск не разобран: ${text.take(100)}")
+        }
+    }
+
+    private fun curBody(): String = (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY }
+
+    // Запоминаем лайкнутую анкету навсегда (файл), чтобы после стопа/перезапуска не запрашивать её снова
+    private fun markLiked(login: String) {
+        if (login.isEmpty() || !liked.add(login)) return
+        try {
+            if (liked.size > LIKED_MAX + 500) {
+                val it = liked.iterator()
+                var n = liked.size - LIKED_MAX
+                while (n > 0 && it.hasNext()) {
+                    it.next()
+                    it.remove()
+                    n--
+                }
+                likedFile.writeText(liked.joinToString("\n") + "\n")
+            } else {
+                likedFile.appendText(login + "\n")
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    // Позиция в поиске и очередь анкет сохраняются: «Стоп → Старт» продолжает с того же места
+    private fun saveSearch() {
+        try {
+            val a = JSONArray()
+            for (lg in queue) {
+                val p = profInfo[lg]
+                a.put(
+                    JSONObject().put("l", lg).put("n", p?.name ?: "").put("a", p?.age ?: "")
+                        .put("f", p?.from ?: "").put("t", p?.to ?: "").put("c", p?.city ?: "")
+                )
+            }
+            prefs.edit().putInt("offset", offset).putString("offBody", curBody()).putString("queue", a.toString()).apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun loadSearch() {
+        try {
+            if (prefs.getString("offBody", "") != curBody()) return
+            offset = prefs.getInt("offset", 0)
+            val a = JSONArray(prefs.getString("queue", "[]") ?: "[]")
+            for (i in 0 until a.length()) {
+                val o = a.optJSONObject(i) ?: continue
+                val lg = o.optString("l")
+                if (lg.isEmpty() || liked.contains(lg)) continue
+                queue.addLast(lg)
+                seen.add(lg)
+                profInfo[lg] = Prof(o.optString("n"), o.optString("a"), o.optString("f"), o.optString("t"), o.optString("c"))
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun resetSearch(clearLiked: Boolean) {
+        offset = 0
+        hasMore = true
+        queue.clear()
+        seen.clear()
+        profInfo.clear()
+        prefs.edit().remove("offset").remove("queue").remove("offBody").apply()
+        if (clearLiked) {
+            liked.clear()
+            try {
+                likedFile.writeText("")
+            } catch (e: Exception) {
+            }
         }
     }
 
@@ -1436,7 +1566,7 @@ class MainActivity : Activity() {
         }
         queue.addFirst(login)
         nextAt = SystemClock.elapsedRealtime() + 25000
-        h.postDelayed(tick, 25000)
+        post(25000)
         updateStatus()
     }
 
@@ -1464,11 +1594,15 @@ class MainActivity : Activity() {
     }
 
     private fun renderReport() {
-        val dayF = SimpleDateFormat("yyyyMMdd", Locale.US)
         val hourF = SimpleDateFormat("HH", Locale.US)
         val tf = SimpleDateFormat("dd.MM HH:mm:ss", Locale.US)
-        val today = dayF.format(Date())
-        val todayList = reports.filter { dayF.format(Date(it.ts)) == today }
+        val dayStart = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val todayList = reports.filter { it.ts >= dayStart }
         val now = System.currentTimeMillis()
         val lastHour = reports.count { now - it.ts < 3600000L }
         val byHour = todayList.groupBy { hourF.format(Date(it.ts)) }.toSortedMap()
@@ -1523,8 +1657,25 @@ class MainActivity : Activity() {
     }
 
     private fun onLike(login: String, text: String) {
+        val stale = !waiting || inflightKind != 2 || login != inflight
+        if (stale) {
+            // Запоздалый ответ (после стопа или тайм-аута): лайк мог реально пройти, учитываем, но цикл не трогаем
+            try {
+                if (login.isNotEmpty() && !liked.contains(login) && JSONObject(text).optInt("errno", -1) == 0) {
+                    prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).apply()
+                    markLiked(login)
+                    addReport(login)
+                    profInfo.remove(login)
+                    logMsg("↩ Запоздалый ответ: лайк всё же прошёл (${mask(login)}), учтён")
+                }
+            } catch (e: Exception) {
+            }
+            return
+        }
         h.removeCallbacks(wd)
         waiting = false
+        inflightKind = 0
+        inflight = ""
         if (!running) return
         try {
             val j = JSONObject(text)
@@ -1561,6 +1712,8 @@ class MainActivity : Activity() {
                 }
                 if (sessLikes <= 3) logMsg("   ответ сайта: ${text.take(150)}")
                 addReport(login)
+                markLiked(login)
+                profInfo.remove(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
                 if (j.has("likesleft") && likesLeft <= 0) {
                     limitPause("Лайки у сайта закончились")
@@ -1603,6 +1756,7 @@ class MainActivity : Activity() {
         notifyAlert(3, "Нужен вход в аккаунт", "Открой приложение и войди. Повторная попытка через 30 мин")
         nextAt = SystemClock.elapsedRealtime() + d
         h.removeCallbacks(tick)
+        h.removeCallbacks(errResume)
         h.postDelayed(errResume, d)
         updateStatus()
     }
@@ -1632,6 +1786,7 @@ class MainActivity : Activity() {
         logMsg("⏸ Много ошибок подряд ($msg). Пауза $min мин, потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + min * 60000L
         h.removeCallbacks(tick)
+        h.removeCallbacks(errResume)
         h.postDelayed(errResume, min * 60000L)
         updateStatus()
     }
@@ -1644,15 +1799,15 @@ class MainActivity : Activity() {
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(System.currentTimeMillis() + d))
         logMsg("⏸ $reason. Продолжу через ${d / 3600000} ч ${d % 3600000 / 60000} мин (около $pauseClock)")
         nextAt = SystemClock.elapsedRealtime() + d
-        h.removeCallbacks(tick)
-        h.postDelayed(tick, d)
+        post(d)
         updateStatus()
     }
 
-    private fun scheduleNext(extraSec: Int = 0, quick: Boolean = false) {
+    private fun scheduleNext(extraSec: Int = 0, quick: Boolean = false, empty: Boolean = false) {
         var d: Long
         if (quick) {
-            d = 1500L + rnd.nextInt(2000)
+            // пустая страница (все уже лайкнуты) — листаем быстрее
+            d = if (empty) 900L + rnd.nextInt(900) else 1500L + rnd.nextInt(2000)
         } else {
             // темп «лайков в минуту» от–до: пауза между лайками случайная (от 60000/hi до 60000/lo мс),
             // из неё вычитаем время, уже потраченное на сам запрос
@@ -1669,11 +1824,15 @@ class MainActivity : Activity() {
             }
         }
         nextAt = SystemClock.elapsedRealtime() + d
-        h.postDelayed(tick, d)
+        post(d)
         updateStatus()
     }
 
     private fun updateStatus() {
+        if (curTab != 2) {
+            updateTop()
+            return
+        }
         status.text = verdict() + "\n" + (if (running) "РАБОТАЕТ" else "остановлен") +
             "\nлайков сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
             "\nосталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}" +
@@ -1687,6 +1846,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        saveSearch()
         if (!running) h.removeCallbacks(uiTick)
         logMsg("Окно приложения закрыто" + if (running) " (лайки продолжают работать в фоне)" else "")
         super.onDestroy()
@@ -1695,6 +1855,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        saveSearch()
         if (sessionGood) saveCookies()
         CookieManager.getInstance().flush()
     }
