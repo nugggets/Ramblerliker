@@ -52,8 +52,8 @@ private const val SITE = "https://m.dating.rambler.ru"
 private const val DEFAULT_LIKE_URL = "/api/a-likes?likes=1&login={login}&num=1"
 private const val DEFAULT_SBODY = "pol=1&bage=60&tage=99&purp=2&geo=3159%2C4312%2C4400&online=0"
 private const val DEFAULT_LIMIT = 60
-private const val DEFAULT_PER_HOUR = 15
-private const val MAX_PER_HOUR = 300
+private const val DEFAULT_PAUSE_MIN = 60f
+private const val DEFAULT_PAUSE_MAX = 80f
 private const val MAX_LIMIT = 2000
 private const val DEFAULT_WIN_FROM = 9
 private const val DEFAULT_WIN_TO = 23
@@ -175,7 +175,7 @@ class MainActivity : Activity() {
     private lateinit var recFilter: EditText
     private lateinit var status: TextView
     private lateinit var etLimit: EditText
-    private lateinit var etPerHour: EditText
+    private lateinit var etPause: EditText
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
     private lateinit var etLikeUrl: EditText
@@ -400,11 +400,11 @@ class MainActivity : Activity() {
             setSingleLine()
             setText(prefs.getInt("limit", DEFAULT_LIMIT).toString())
         }
-        etPerHour = EditText(this).apply {
-            hint = "лайков в час"
-            inputType = InputType.TYPE_CLASS_NUMBER
+        etPause = EditText(this).apply {
+            hint = "60-80"
+            inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine()
-            setText(prefs.getInt("perHour", DEFAULT_PER_HOUR).toString())
+            setText(pauseText())
         }
         etWinFrom = EditText(this).apply {
             hint = "с (час)"
@@ -431,8 +431,8 @@ class MainActivity : Activity() {
                     addView(status)
                     addView(TextView(this@MainActivity).apply { text = "\nЛимит в сутки (макс. $MAX_LIMIT):" })
                     addView(etLimit)
-                    addView(TextView(this@MainActivity).apply { text = "Лайков в час (макс. $MAX_PER_HOUR):" })
-                    addView(etPerHour)
+                    addView(TextView(this@MainActivity).apply { text = "Пауза между лайками, минуты (от-до, время случайное, например 60-80):" })
+                    addView(etPause)
                     addView(TextView(this@MainActivity).apply { text = "Окно работы по Москве, часы от и до (0 и 24 = круглосуточно):" })
                     addView(row(etWinFrom, etWinTo))
                     addView(TextView(this@MainActivity).apply { text = "URL лайка ({login} подставляется сам):" })
@@ -693,14 +693,13 @@ class MainActivity : Activity() {
         if (nightLogged) return "🌙 вне окна ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК, сейчас ${mskNow()} МСК"
         if (autoOn) return "🔑 вход слетел, захожу сам (попытка $authFails из 4)"
         if (rowErr > 0) return "⚠ ошибки подряд: $rowErr, ${lastError.take(60)}"
-        if (hourTarget > 0 && hourCount >= hourTarget) return "⏸ норма часа выполнена ($hourCount из $hourTarget), жду"
         if (lastLikeAt == 0L) return "… ждём первый лайк"
         return "✅ лайки ставятся, последний ${ago((SystemClock.elapsedRealtime() - lastLikeAt) / 1000)} назад"
     }
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.15  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.16  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -833,15 +832,15 @@ class MainActivity : Activity() {
             toast("В URL лайка должно быть {login}")
             return false
         }
-        val perHour = (etPerHour.text.toString().trim().toIntOrNull() ?: DEFAULT_PER_HOUR).coerceIn(1, MAX_PER_HOUR)
+        val (pa, pb) = parsePause(etPause.text.toString())
         val wf = (etWinFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_FROM).coerceIn(0, 23)
         val wt = (etWinTo.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_TO).coerceIn(wf + 1, 24)
-        prefs.edit().putInt("limit", lim).putInt("perHour", perHour)
+        prefs.edit().putInt("limit", lim).putFloat("pauseMin", pa).putFloat("pauseMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url).apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())
-        etPerHour.setText(perHour.toString())
+        etPause.setText(pauseText())
         etLikeUrl.setText(url)
         toast("Сохранено")
         return true
@@ -867,7 +866,7 @@ class MainActivity : Activity() {
         sessStart = SystemClock.elapsedRealtime()
         nextAt = 0L
         nightLogged = false
-        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, ${prefs.getInt("perHour", DEFAULT_PER_HOUR)} лайков в час, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, пауза между лайками ${pauseText()} мин, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
         prefs.edit().putBoolean("wantRunning", true).apply()
         lastNotif = ""
@@ -960,14 +959,7 @@ class MainActivity : Activity() {
             h.postDelayed(tick, 6000)
             return
         }
-        if (!hourOk()) {
-            val left = 3600000L - (SystemClock.elapsedRealtime() - hourStart) + 2000L + rnd.nextInt(30000)
-            logMsg("⏸ Норма часа выполнена ($hourCount из $hourTarget), жду следующего часа: ${left / 60000} мин")
-            nextAt = SystemClock.elapsedRealtime() + left
-            h.postDelayed(tick, left)
-            updateStatus()
-            return
-        }
+        hourOk()
         if (queue.isEmpty()) {
             fetchBatch()
         } else {
@@ -976,22 +968,19 @@ class MainActivity : Activity() {
         updateStatus()
     }
 
-    // true, если в текущем часе ещё можно ставить лайки
+    // Только счётчик лайков «за этот час» для статуса (ограничения по часам больше нет)
     private fun hourOk(): Boolean {
         val now = SystemClock.elapsedRealtime()
         if (hourStart == 0L || now - hourStart >= 3600000L) {
             hourStart = now
             hourCount = 0
-            logMsg("🕐 Новый час: норма ${prefs.getInt("perHour", DEFAULT_PER_HOUR)} лайков")
         }
-        hourTarget = prefs.getInt("perHour", DEFAULT_PER_HOUR)
-        return hourCount < hourTarget
+        return true
     }
 
     private fun hourInfo(): String {
-        if (!running || hourTarget == 0) return "-"
-        val left = maxOf(0L, 3600000L - (SystemClock.elapsedRealtime() - hourStart)) / 60000
-        return "$hourCount из $hourTarget, до конца часа $left мин"
+        if (!running) return "-"
+        return "$hourCount за этот час, пауза ${pauseText()} мин"
     }
 
     private fun fetchBatch() {
@@ -1273,6 +1262,29 @@ class MainActivity : Activity() {
         return n
     }
 
+    private fun fmtNum(f: Float): String = if (f == f.toInt().toFloat()) f.toInt().toString() else f.toString()
+
+    private fun pauseMin(): Float = prefs.getFloat("pauseMin", DEFAULT_PAUSE_MIN)
+
+    private fun pauseMax(): Float = prefs.getFloat("pauseMax", DEFAULT_PAUSE_MAX)
+
+    // «60-80» (или одно число, если границы равны)
+    private fun pauseText(): String =
+        if (pauseMin() == pauseMax()) fmtNum(pauseMin()) else fmtNum(pauseMin()) + "-" + fmtNum(pauseMax())
+
+    // Разбор «60-80», «60 – 80», «1,5-3» или одного числа
+    private fun parsePause(t: String): Pair<Float, Float> {
+        val nums = Regex("\\d+(?:[.,]\\d+)?").findAll(t).map { it.value.replace(',', '.').toFloat() }.toList()
+        var a = (nums.getOrNull(0) ?: DEFAULT_PAUSE_MIN).coerceIn(0.2f, 1440f)
+        var b = (nums.getOrNull(1) ?: a).coerceIn(0.2f, 1440f)
+        if (b < a) {
+            val x = a
+            a = b
+            b = x
+        }
+        return Pair(a, b)
+    }
+
     private fun batteryOk(): Boolean {
         return try {
             getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
@@ -1313,7 +1325,7 @@ class MainActivity : Activity() {
             autoOn -> "захожу в аккаунт"
             else -> "работает"
         }
-        val text = "$state · сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)} · этот час $hourCount из $hourTarget"
+        val text = "$state · сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)} · за час $hourCount"
         if (text == lastNotif) return
         lastNotif = text
         try {
@@ -1420,7 +1432,7 @@ class MainActivity : Activity() {
         val byHour = todayList.groupBy { hourF.format(Date(it.ts)) }.toSortedMap()
             .entries.joinToString(", ") { e -> "${e.key}ч: ${e.value.size}" }
         repStats.text = "Сегодня лайкнуто: ${todayList.size} (счётчик приложения ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)})" +
-            "\nЗа последний час: $lastHour (норма ${prefs.getInt("perHour", DEFAULT_PER_HOUR)} в час)" +
+            "\nЗа последний час: $lastHour (пауза между лайками ${pauseText()} мин)" +
             "\nЗа сессию: $sessLikes, ошибок: $errors" +
             "\nВсего в отчёте: ${reports.size}" +
             "\nПо часам сегодня: ${if (byHour.isEmpty()) "-" else byHour}"
@@ -1556,12 +1568,10 @@ class MainActivity : Activity() {
         if (quick) {
             d = 1500L + rnd.nextInt(2000)
         } else {
-            // растягиваем оставшиеся лайки часа на оставшееся время часа, с разбросом ±40%
-            val now = SystemClock.elapsedRealtime()
-            val remMs = maxOf(60000L, 3600000L - (now - hourStart))
-            val remLikes = maxOf(1, hourTarget - hourCount)
-            d = (remMs / remLikes * (0.6 + 0.8 * rnd.nextDouble())).toLong()
-            d = minOf(d, remMs)
+            // случайная пауза между лайками из диапазона «от–до» минут
+            val lo = pauseMin()
+            val hi = maxOf(lo, pauseMax())
+            d = ((lo + rnd.nextDouble() * (hi - lo)) * 60000.0).toLong()
             d = maxOf(d, 8000L)
             if (extraSec > 0) {
                 val e = maxOf(d, minOf(extraSec, 900) * 1000L)
