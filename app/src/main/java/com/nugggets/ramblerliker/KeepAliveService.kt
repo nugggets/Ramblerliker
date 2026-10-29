@@ -48,6 +48,10 @@ class KeepAliveService : Service() {
         }
         if (intent == null) {
             // Систему перезапустила службу после закрытия приложения: лайки не идут, сообщаем об этом
+            try {
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: Exception) {
+            }
             val alert = Notification.Builder(this, "liker_alert")
                 .setContentTitle("Лайки остановились")
                 .setContentText("Система закрыла приложение. Нажми, чтобы продолжить")

@@ -52,8 +52,8 @@ private const val SITE = "https://m.dating.rambler.ru"
 private const val DEFAULT_LIKE_URL = "/api/a-likes?likes=1&login={login}&num=1"
 private const val DEFAULT_SBODY = "pol=1&bage=60&tage=99&purp=2&geo=3159%2C4312%2C4400&online=0"
 private const val DEFAULT_LIMIT = 60
-private const val DEFAULT_PAUSE_MIN = 60f
-private const val DEFAULT_PAUSE_MAX = 80f
+private const val DEFAULT_RATE_MIN = 60f
+private const val DEFAULT_RATE_MAX = 80f
 private const val MAX_LIMIT = 2000
 private const val DEFAULT_WIN_FROM = 9
 private const val DEFAULT_WIN_TO = 23
@@ -175,7 +175,7 @@ class MainActivity : Activity() {
     private lateinit var recFilter: EditText
     private lateinit var status: TextView
     private lateinit var etLimit: EditText
-    private lateinit var etPause: EditText
+    private lateinit var etRate: EditText
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
     private lateinit var etLikeUrl: EditText
@@ -196,6 +196,10 @@ class MainActivity : Activity() {
     private var authFails = 0
     private var autoOn = false
     private var errLevel = 0
+    private var likeSentAt = 0L
+    private var aggCount = 0
+    private var aggStart = 0L
+    private var lastNotifAt = 0L
     private var lastNotif = ""
     private lateinit var autoBtn: Button
     private var limitWait = false
@@ -326,6 +330,12 @@ class MainActivity : Activity() {
         logMsg("Приложение открыто")
         liveInstance?.let { if (it !== this) it.retire() }
         liveInstance = this
+        try {
+            val nmc = getSystemService(NotificationManager::class.java)
+            nmc.cancel(2)
+            nmc.cancel(3)
+        } catch (e: Exception) {
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -400,11 +410,11 @@ class MainActivity : Activity() {
             setSingleLine()
             setText(prefs.getInt("limit", DEFAULT_LIMIT).toString())
         }
-        etPause = EditText(this).apply {
+        etRate = EditText(this).apply {
             hint = "60-80"
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine()
-            setText(pauseText())
+            setText(rateText())
         }
         etWinFrom = EditText(this).apply {
             hint = "с (час)"
@@ -431,8 +441,8 @@ class MainActivity : Activity() {
                     addView(status)
                     addView(TextView(this@MainActivity).apply { text = "\nЛимит в сутки (макс. $MAX_LIMIT):" })
                     addView(etLimit)
-                    addView(TextView(this@MainActivity).apply { text = "Пауза между лайками, минуты (от-до, время случайное, например 60-80):" })
-                    addView(etPause)
+                    addView(TextView(this@MainActivity).apply { text = "Лайков в минуту (от-до; пауза между лайками случайная, поэтому число каждую минуту разное, например 60-80):" })
+                    addView(etRate)
                     addView(TextView(this@MainActivity).apply { text = "Окно работы по Москве, часы от и до (0 и 24 = круглосуточно):" })
                     addView(row(etWinFrom, etWinTo))
                     addView(TextView(this@MainActivity).apply { text = "URL лайка ({login} подставляется сам):" })
@@ -464,7 +474,7 @@ class MainActivity : Activity() {
             }
             refreshAutoBtn()
             addView(autoBtn)
-            addView(btn("Фоновая работа: разрешить") { askBackground(true) })
+            addView(btn("Фоновая работа и автозапуск: разрешить") { setupBackground() })
             addView(btn("Скопировать сессию для сервера") { copySession() })
             addView(btn("Выйти из аккаунта (очистить сессию)") { clearSession() })
         }
@@ -548,10 +558,11 @@ class MainActivity : Activity() {
         show(0)
         updateStatus()
         h.postDelayed(uiTick, 3000)
-        if (prefs.getBoolean("wantRunning", false)) {
+        // по умолчанию лайки всегда запускаются сами; не запускаются только после нажатия «Стоп»
+        if (prefs.getBoolean("wantRunning", true)) {
             h.postDelayed({
                 if (!running) {
-                    logMsg("↻ Продолжаю работу после перезапуска приложения")
+                    logMsg("▶ Автозапуск лайков")
                     startLikes()
                 }
             }, 6000)
@@ -699,7 +710,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        topBar.text = "RamblerLiker 0.16  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        topBar.text = "RamblerLiker 0.17  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
     }
 
     private fun nextInfo(): String {
@@ -832,15 +843,15 @@ class MainActivity : Activity() {
             toast("В URL лайка должно быть {login}")
             return false
         }
-        val (pa, pb) = parsePause(etPause.text.toString())
+        val (pa, pb) = parseRate(etRate.text.toString())
         val wf = (etWinFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_FROM).coerceIn(0, 23)
         val wt = (etWinTo.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_TO).coerceIn(wf + 1, 24)
-        prefs.edit().putInt("limit", lim).putFloat("pauseMin", pa).putFloat("pauseMax", pb)
+        prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url).apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())
-        etPause.setText(pauseText())
+        etRate.setText(rateText())
         etLikeUrl.setText(url)
         toast("Сохранено")
         return true
@@ -861,17 +872,20 @@ class MainActivity : Activity() {
         profInfo.clear()
         keysLogged = false
         sessLikes = 0
+        aggCount = 0
+        aggStart = 0L
         authFails = 0
         lastLikeAt = 0L
         sessStart = SystemClock.elapsedRealtime()
         nextAt = 0L
         nightLogged = false
-        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, пауза между лайками ${pauseText()} мин, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, темп ${rateText()} лайков в минуту, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         startForegroundService(Intent(this, KeepAliveService::class.java))
         prefs.edit().putBoolean("wantRunning", true).apply()
         lastNotif = ""
         errLevel = 0
         logMsg(if (batteryOk()) "Батарея: без ограничений" else "⚠ Батарея ограничивает работу в фоне: нажми «Фоновая работа» на вкладке «Лайки»")
+        logMsg(if (overlayOk()) "Автозапуск после перезагрузки: разрешён" else "⚠ Для автозапуска после перезагрузки разреши «Поверх других окон»: кнопка «Фоновая работа и автозапуск»")
         if (!batteryOk() && !prefs.getBoolean("batAsked", false)) {
             prefs.edit().putBoolean("batAsked", true).apply()
             askBackground(false)
@@ -940,9 +954,7 @@ class MainActivity : Activity() {
         }
         if (autoOn) {
             if (SystemClock.elapsedRealtime() - authStart > 150000L) {
-                setAuto(false)
-                logMsg("🔒 Автовход не завершился за 2.5 минуты")
-                stopLikes("не удалось войти автоматически: войди вручную во вкладке «Браузер» и нажми «Старт»")
+                authPause("Автовход не завершился за 2.5 минуты")
                 return
             }
             if (web.url?.startsWith(SITE) != true) {
@@ -980,7 +992,7 @@ class MainActivity : Activity() {
 
     private fun hourInfo(): String {
         if (!running) return "-"
-        return "$hourCount за этот час, пауза ${pauseText()} мин"
+        return "$hourCount за этот час, темп ${rateText()} в минуту"
     }
 
     private fun fetchBatch() {
@@ -995,6 +1007,7 @@ class MainActivity : Activity() {
         val tmpl = prefs.getString("likeUrl", DEFAULT_LIKE_URL) ?: DEFAULT_LIKE_URL
         val url = tmpl.replace("{login}", URLEncoder.encode(login, "UTF-8"))
         waiting = true
+        likeSentAt = SystemClock.elapsedRealtime()
         h.postDelayed(wd, 20000)
         web.evaluateJavascript(
             "window.__lk && window.__lk.like(${JSONObject.quote(login)}, ${JSONObject.quote(url)});", null
@@ -1264,19 +1277,19 @@ class MainActivity : Activity() {
 
     private fun fmtNum(f: Float): String = if (f == f.toInt().toFloat()) f.toInt().toString() else f.toString()
 
-    private fun pauseMin(): Float = prefs.getFloat("pauseMin", DEFAULT_PAUSE_MIN)
+    private fun rateMin(): Float = prefs.getFloat("rateMin", DEFAULT_RATE_MIN)
 
-    private fun pauseMax(): Float = prefs.getFloat("pauseMax", DEFAULT_PAUSE_MAX)
+    private fun rateMax(): Float = prefs.getFloat("rateMax", DEFAULT_RATE_MAX)
 
     // «60-80» (или одно число, если границы равны)
-    private fun pauseText(): String =
-        if (pauseMin() == pauseMax()) fmtNum(pauseMin()) else fmtNum(pauseMin()) + "-" + fmtNum(pauseMax())
+    private fun rateText(): String =
+        if (rateMin() == rateMax()) fmtNum(rateMin()) else fmtNum(rateMin()) + "-" + fmtNum(rateMax())
 
     // Разбор «60-80», «60 – 80», «1,5-3» или одного числа
-    private fun parsePause(t: String): Pair<Float, Float> {
+    private fun parseRate(t: String): Pair<Float, Float> {
         val nums = Regex("\\d+(?:[.,]\\d+)?").findAll(t).map { it.value.replace(',', '.').toFloat() }.toList()
-        var a = (nums.getOrNull(0) ?: DEFAULT_PAUSE_MIN).coerceIn(0.2f, 1440f)
-        var b = (nums.getOrNull(1) ?: a).coerceIn(0.2f, 1440f)
+        var a = (nums.getOrNull(0) ?: DEFAULT_RATE_MIN).coerceIn(0.05f, 300f)
+        var b = (nums.getOrNull(1) ?: a).coerceIn(0.05f, 300f)
         if (b < a) {
             val x = a
             a = b
@@ -1290,6 +1303,36 @@ class MainActivity : Activity() {
             getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
         } catch (e: Exception) {
             true
+        }
+    }
+
+    private fun overlayOk(): Boolean {
+        return try {
+            Settings.canDrawOverlays(this)
+        } catch (e: Exception) {
+            true
+        }
+    }
+
+    // Пошагово: батарея -> «Поверх других окон» (нужно, чтобы приложение само открывалось из фона) -> настройки приложения
+    private fun setupBackground() {
+        when {
+            !batteryOk() -> {
+                toast("1/2: разреши работу без ограничений батареи")
+                askBackground(false)
+            }
+            !overlayOk() -> {
+                toast("2/2: разреши «Поверх других окон» — так приложение само запустится после перезагрузки")
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                } catch (e: Exception) {
+                    openAppSettings()
+                }
+            }
+            else -> {
+                toast("Всё разрешено. Если телефон всё равно закрывает приложение, включи «Автозапуск» в настройках приложения")
+                openAppSettings()
+            }
         }
     }
 
@@ -1326,8 +1369,9 @@ class MainActivity : Activity() {
             else -> "работает"
         }
         val text = "$state · сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)} · за час $hourCount"
-        if (text == lastNotif) return
+        if (text == lastNotif || SystemClock.elapsedRealtime() - lastNotifAt < 15000L) return
         lastNotif = text
+        lastNotifAt = SystemClock.elapsedRealtime()
         try {
             val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
             val n = Notification.Builder(this, "liker")
@@ -1380,9 +1424,7 @@ class MainActivity : Activity() {
         errors++
         lastError = "errno=24 (вход слетел?)"
         if (authFails > 4) {
-            setAuto(false)
-            logMsg("🔒 Не удалось войти автоматически (попыток: ${authFails - 1})")
-            stopLikes("слетел вход (errno=24): войди вручную во вкладке «Браузер» и нажми «Старт»")
+            authPause("Не удалось войти автоматически (попыток: ${authFails - 1})")
             return
         }
         setAuto(true)
@@ -1432,7 +1474,7 @@ class MainActivity : Activity() {
         val byHour = todayList.groupBy { hourF.format(Date(it.ts)) }.toSortedMap()
             .entries.joinToString(", ") { e -> "${e.key}ч: ${e.value.size}" }
         repStats.text = "Сегодня лайкнуто: ${todayList.size} (счётчик приложения ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)})" +
-            "\nЗа последний час: $lastHour (пауза между лайками ${pauseText()} мин)" +
+            "\nЗа последний час: $lastHour (темп ${rateText()} в минуту)" +
             "\nЗа сессию: $sessLikes, ошибок: $errors" +
             "\nВсего в отчёте: ${reports.size}" +
             "\nПо часам сегодня: ${if (byHour.isEmpty()) "-" else byHour}"
@@ -1502,7 +1544,21 @@ class MainActivity : Activity() {
                 }
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
-                logMsg("❤ Лайк ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}: ${profInfo[login]?.let { fmtProf(it) } ?: "данных анкеты нет"} ($login), осталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}")
+                val prof = profInfo[login]?.let { fmtProf(it) } ?: "данных анкеты нет"
+                val left = if (likesLeft < 0) "?" else likesLeft.toString()
+                val cnt = prefs.getInt("count", 0)
+                if (maxOf(rateMin(), rateMax()) <= 6f || sessLikes <= 3) {
+                    logMsg("❤ Лайк $cnt/${prefs.getInt("limit", DEFAULT_LIMIT)}: $prof ($login), осталось у сайта: $left")
+                } else {
+                    aggCount++
+                    val nowE = SystemClock.elapsedRealtime()
+                    if (aggStart == 0L) aggStart = nowE
+                    if (nowE - aggStart >= 60000L) {
+                        logMsg("❤ За минуту лайков: $aggCount. Сегодня $cnt/${prefs.getInt("limit", DEFAULT_LIMIT)}, осталось у сайта: $left. Последний: $prof ($login)")
+                        aggCount = 0
+                        aggStart = nowE
+                    }
+                }
                 if (sessLikes <= 3) logMsg("   ответ сайта: ${text.take(150)}")
                 addReport(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
@@ -1538,6 +1594,36 @@ class MainActivity : Activity() {
         scheduleNext()
     }
 
+    // Не получилось войти: не останавливаемся, а через 30 минут пробуем снова и просим войти вручную
+    private fun authPause(reason: String) {
+        setAuto(false)
+        authFails = 0
+        val d = 1800000L
+        logMsg("🔒 $reason. Повторю попытку через 30 мин (если нужен код из СМС — открой приложение и войди вручную)")
+        notifyAlert(3, "Нужен вход в аккаунт", "Открой приложение и войди. Повторная попытка через 30 мин")
+        nextAt = SystemClock.elapsedRealtime() + d
+        h.removeCallbacks(tick)
+        h.postDelayed(errResume, d)
+        updateStatus()
+    }
+
+    private fun notifyAlert(id: Int, title: String, text: String) {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(android.app.NotificationChannel("liker_alert", "Liker: важное", NotificationManager.IMPORTANCE_HIGH))
+            val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val n = Notification.Builder(this, "liker_alert")
+                .setContentTitle(title)
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_menu_send)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(id, n)
+        } catch (e: Exception) {
+        }
+    }
+
     // Серия ошибок (нет сети, сбой сайта): не останавливаемся, а ждём 5/10/20/30 минут и пробуем снова
     private fun errorPause(msg: String) {
         errLevel++
@@ -1568,11 +1654,14 @@ class MainActivity : Activity() {
         if (quick) {
             d = 1500L + rnd.nextInt(2000)
         } else {
-            // случайная пауза между лайками из диапазона «от–до» минут
-            val lo = pauseMin()
-            val hi = maxOf(lo, pauseMax())
-            d = ((lo + rnd.nextDouble() * (hi - lo)) * 60000.0).toLong()
-            d = maxOf(d, 8000L)
+            // темп «лайков в минуту» от–до: пауза между лайками случайная (от 60000/hi до 60000/lo мс),
+            // из неё вычитаем время, уже потраченное на сам запрос
+            val lo = rateMin().toDouble()
+            val hi = maxOf(lo, rateMax().toDouble())
+            val interval = 60000.0 / hi + rnd.nextDouble() * (60000.0 / lo - 60000.0 / hi)
+            val spent = if (likeSentAt > 0L) SystemClock.elapsedRealtime() - likeSentAt else 0L
+            d = maxOf((interval - spent).toLong(), 50L)
+            likeSentAt = 0L
             if (extraSec > 0) {
                 val e = maxOf(d, minOf(extraSec, 900) * 1000L)
                 if (e > d) logMsg("⏳ Сайт просит подождать ${e / 1000} с")
