@@ -11,4 +11,5 @@ class MambaKeepAliveService : KeepAliveService() {
     override val alertId: Int = 12
     override val target: Class<*> get() = MambaActivity::class.java
     override val lockTag: String = "liker_mamba"
+    override val wantLocation: Boolean = true
 }

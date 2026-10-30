@@ -4,7 +4,9 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.app.Service
+import android.content.pm.PackageManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -19,6 +21,7 @@ open class KeepAliveService : Service() {
     protected open val alertId: Int = 2
     protected open val target: Class<*> get() = MainActivity::class.java
     protected open val lockTag: String = "liker"
+    protected open val wantLocation: Boolean = false
     private var wl: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
 
@@ -43,13 +46,15 @@ open class KeepAliveService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 34) {
-            // specialUse: без тайм-аута, в отличие от dataSync на новых версиях Android
-            startForeground(notifId, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(notifId, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(notifId, n)
+        // Тип «location» нужен, чтобы сайт получал геопозицию, пока окно свёрнуто (только если разрешение выдано)
+        val loc = if (wantLocation && Build.VERSION.SDK_INT >= 29 &&
+            (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED)
+        ) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+        try {
+            goForeground(n, loc)
+        } catch (e: Exception) {
+            if (loc != 0) goForeground(n, 0) else throw e
         }
         if (intent == null) {
             // Систему перезапустила службу после закрытия приложения: лайки не идут, сообщаем об этом
@@ -71,6 +76,17 @@ open class KeepAliveService : Service() {
         }
         acquireLocks()
         return START_STICKY
+    }
+
+    private fun goForeground(n: Notification, extra: Int) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            // specialUse: без тайм-аута, в отличие от dataSync на новых версиях Android
+            startForeground(notifId, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or extra)
+        } else if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(notifId, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or extra)
+        } else {
+            startForeground(notifId, n)
+        }
     }
 
     private fun acquireLocks() {

@@ -28,6 +28,8 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.GeolocationPermissions
+import android.webkit.WebChromeClient
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -425,9 +427,14 @@ open class MainActivity : Activity() {
         }
         loadSearch()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        val askPerms = ArrayList<String>()
+        if (Build.VERSION.SDK_INT >= 33) askPerms.add(Manifest.permission.POST_NOTIFICATIONS)
+        // геопозиция нужна сайтам знакомств (Mamba без неё не работает)
+        if (svc.id != "rambler" && !hasLoc()) {
+            askPerms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            askPerms.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
+        if (askPerms.isNotEmpty()) requestPermissions(askPerms.toTypedArray(), 1)
 
         setupWeb()
 
@@ -720,6 +727,25 @@ open class MainActivity : Activity() {
         cm.setAcceptCookie(true)
         cm.setAcceptThirdPartyCookies(web, true)
         web.addJavascriptInterface(Bridge(), "Rec")
+        s.setGeolocationEnabled(true)
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
+                val o = origin ?: return
+                if (callback == null) return
+                if (!o.contains(svc.hostSuffix)) {
+                    callback.invoke(o, false, false) // чужие сайты геопозицию не получают
+                    return
+                }
+                if (hasLoc()) {
+                    callback.invoke(o, true, true)
+                    logMsg("📍 Геопозиция выдана сайту ${o.take(40)}")
+                } else {
+                    geoCb = callback
+                    geoOrigin = o
+                    requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 2)
+                }
+            }
+        }
         web.webViewClient = object : WebViewClient() {
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
                 logMsg("⚠ Процесс страницы упал, пересоздаю окно (работа продолжится сама)")
@@ -795,6 +821,31 @@ open class MainActivity : Activity() {
                 if (inflightKind == 2 && inflight.isNotEmpty()) queue.addFirst(inflight)
                 inflightKind = 0
                 if (running) handleError("$kind: $msg")
+            }
+        }
+    }
+
+    private var geoCb: GeolocationPermissions.Callback? = null
+    private var geoOrigin = ""
+
+    private fun hasLoc(): Boolean =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val ok = hasLoc()
+        val cb = geoCb
+        if (cb != null) {
+            cb.invoke(geoOrigin, ok, ok)
+            geoCb = null
+        }
+        if (permissions.any { it.contains("LOCATION") }) {
+            logMsg(if (ok) "📍 Геопозиция разрешена" else "⚠ Геопозиция запрещена: ${svc.title} без неё не работает. Разреши её в настройках приложения")
+            if (ok) {
+                web.reload()
+                // перезапускаем службу, чтобы она получила тип «геопозиция»
+                if (running) startForegroundService(Intent(this, keepCls()))
             }
         }
     }
