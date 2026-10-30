@@ -11,9 +11,22 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
+import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.os.IBinder
 import android.os.PowerManager
+
+// Сколько окон приложения сейчас живо в этом процессе (служба проверяет, поднялось ли окно после перезапуска)
+object LikerState {
+    @Volatile
+    var activities = 0
+}
 
 open class KeepAliveService : Service() {
     // Для Mamba служба в своём процессе со своими id уведомлений (см. MambaKeepAliveService)
@@ -24,6 +37,40 @@ open class KeepAliveService : Service() {
     protected open val wantLocation: Boolean = false
     private var wl: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
+    private var overlay: View? = null
+    private val hh = Handler(Looper.getMainLooper())
+
+    // Крошечное невидимое окно поверх всего. С ним система (Android 15) разрешает открыть окно приложения из фона,
+    // а ещё процесс с таким окном система закрывает реже
+    private fun showOverlay() {
+        if (overlay != null) return
+        try {
+            if (!Settings.canDrawOverlays(this)) return
+            val v = View(this)
+            v.setBackgroundColor(0x01000000)
+            val lp = WindowManager.LayoutParams(
+                1, 1,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            )
+            lp.gravity = Gravity.START or Gravity.TOP
+            getSystemService(WindowManager::class.java).addView(v, lp)
+            overlay = v
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun hideOverlay() {
+        val v = overlay ?: return
+        try {
+            getSystemService(WindowManager::class.java).removeView(v)
+        } catch (e: Exception) {
+        }
+        overlay = null
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -56,25 +103,31 @@ open class KeepAliveService : Service() {
         } catch (e: Exception) {
             if (loc != 0) goForeground(n, 0) else throw e
         }
-        if (intent == null) {
-            // Систему перезапустила службу после закрытия приложения: лайки не идут, сообщаем об этом
-            try {
-                startActivity(Intent(this, target).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            } catch (e: Exception) {
-            }
-            val alert = Notification.Builder(this, "liker_alert")
-                .setContentTitle("Лайки остановились")
-                .setContentText("Система закрыла приложение. Нажми, чтобы продолжить")
-                .setSmallIcon(android.R.drawable.ic_menu_send)
-                .setContentIntent(pi)
-                .setAutoCancel(true)
-                .build()
-            nm.notify(alertId, alert)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        showOverlay()
         acquireLocks()
+        if (intent == null || intent.getBooleanExtra("launch", false)) {
+            // Службу подняла система после закрытия приложения (или телефон загрузился): сами открываем окно,
+            // оно запустит лайки (если не нажимали «Стоп»). Уведомление «остановились» только если окно так и не открылось
+            hh.postDelayed({
+                try {
+                    startActivity(Intent(this, target).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                }
+            }, 600)
+            hh.postDelayed({
+                if (LikerState.activities <= 0) {
+                    val alert = Notification.Builder(this, "liker_alert")
+                        .setContentTitle("Лайки остановились")
+                        .setContentText("Система закрыла приложение. Нажми, чтобы продолжить")
+                        .setSmallIcon(android.R.drawable.ic_menu_send)
+                        .setContentIntent(pi)
+                        .setFullScreenIntent(pi, true)
+                        .setAutoCancel(true)
+                        .build()
+                    nm.notify(alertId, alert)
+                }
+            }, 15000)
+        }
         return START_STICKY
     }
 
@@ -115,6 +168,8 @@ open class KeepAliveService : Service() {
     }
 
     override fun onDestroy() {
+        hh.removeCallbacksAndMessages(null)
+        hideOverlay()
         try {
             wl?.release()
         } catch (e: Exception) {

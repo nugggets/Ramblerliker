@@ -398,6 +398,7 @@ open class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         svc = SERVICES.firstOrNull { it.id == serviceId() } ?: SERVICES[0]
+        LikerState.activities++
         // у каждого сервиса свои cookie и данные сайта: отдельная папка WebView (нужна до создания первого WebView в процессе)
         if (svc.id != "rambler" && Build.VERSION.SDK_INT >= 28) {
             try {
@@ -2336,6 +2337,7 @@ open class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        LikerState.activities = (LikerState.activities - 1).coerceAtLeast(0)
         saveSearch()
         if (!running) h.removeCallbacks(uiTick)
         logMsg("Окно приложения закрыто" + if (running) " (лайки продолжают работать в фоне)" else "")
