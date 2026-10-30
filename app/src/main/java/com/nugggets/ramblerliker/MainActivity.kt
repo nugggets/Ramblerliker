@@ -50,6 +50,7 @@ import java.util.TimeZone
 
 private const val SITE = "https://m.dating.rambler.ru"
 private const val DEFAULT_LIKE_URL = "/api/a-likes?likes=1&login={login}&num=1"
+private const val DEFAULT_SEARCH_URL = "/api/a-search?foto=1&offset={offset}&save=1&fotopref1=200x200&fotopref2=BP_FILE"
 private const val DEFAULT_SBODY = "pol=1&bage=60&tage=99&purp=2&geo=3159%2C4312%2C4400&online=0"
 private const val DEFAULT_LIMIT = 60
 private const val DEFAULT_RATE_MIN = 60f
@@ -59,7 +60,7 @@ private const val DEFAULT_WIN_FROM = 9
 private const val DEFAULT_WIN_TO = 23
 private const val LOG_MAX = 500
 private var crashHookSet = false
-private var cookiesRestored = false
+private var cookiesRestoredFor = ""
 private var liveInstance: MainActivity? = null
 private const val REP_MAX = 3000
 private const val LIKED_MAX = 20000
@@ -69,6 +70,40 @@ private val COOKIE_URLS = listOf(
     "https://auth.rambler.ru/",
     "https://id.rambler.ru/",
     "https://rambler.ru/"
+)
+
+// Профиль сервиса: адрес сайта, куки и значения по умолчанию. У каждого сервиса свои настройки и свои файлы.
+private class Svc(
+    val id: String,
+    val title: String,
+    val site: String,
+    val hosts: List<String>,
+    val hostSuffix: String,
+    val prefsName: String,
+    val suffix: String,
+    val cookieUrls: List<String>,
+    val cookieDomain: String,
+    val defLikeUrl: String,
+    val defLikeMethod: String,
+    val defLikeBody: String,
+    val defSearchUrl: String,
+    val defSearchMethod: String,
+    val defSbody: String
+)
+
+private val SERVICES = listOf(
+    Svc(
+        "rambler", "Rambler", SITE, listOf(SITE), "rambler.ru", "liker", "",
+        COOKIE_URLS, ".rambler.ru",
+        DEFAULT_LIKE_URL, "GET", "", DEFAULT_SEARCH_URL, "POST", DEFAULT_SBODY
+    ),
+    // Адреса поиска и лайка Mamba пустые: их снимает кнопка «Определить запросы с сайта»
+    Svc(
+        "mamba", "Mamba", "https://www.mamba.ru",
+        listOf("https://www.mamba.ru", "https://mamba.ru", "https://m.mamba.ru"), "mamba.ru", "liker_mamba", "_mamba",
+        listOf("https://www.mamba.ru/", "https://mamba.ru/", "https://m.mamba.ru/"), ".mamba.ru",
+        "", "POST", "", "", "POST", ""
+    )
 )
 
 private class Prof(val name: String, val age: String, val from: String, val to: String, val city: String)
@@ -105,18 +140,25 @@ private const val HOOK_JS = """
 """
 
 // Прямые запросы к API сайта из контекста страницы (с её cookie и заголовками)
-private const val API_JS = """
+private fun apiJs(): String = """
 (function(){
- var H={'X-Requested-With':'XMLHttpRequest'};
+ function opts(method,body){
+  var o={method:method||'GET',credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}};
+  if(o.method!=='GET'&&o.method!=='HEAD'&&body){
+   var b=String(body).replace(/^\s+/,'');
+   o.headers['Content-Type']=(b.charAt(0)==='{'||b.charAt(0)==='[')?'application/json; charset=UTF-8':'application/x-www-form-urlencoded; charset=UTF-8';
+   o.body=body;
+  }
+  return o;
+ }
  window.__lk={
-  batch:function(offset,body){
-   var h2={'X-Requested-With':'XMLHttpRequest','Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'};
-   fetch('/api/a-search?foto=1&offset='+offset+'&save=1&fotopref1=200x200&fotopref2=BP_FILE',{method:'POST',credentials:'include',headers:h2,body:body})
+  batch:function(url,method,body){
+   fetch(url,opts(method,body))
     .then(function(r){return r.text()}).then(function(t){Rec.apiBatch(t)}).catch(function(e){Rec.apiErr('batch',String(e))});
   },
-  like:function(login,url){
-   fetch(url,{credentials:'include',headers:H})
-    .then(function(r){return r.text()}).then(function(t){Rec.apiLike(login,t)}).catch(function(e){Rec.apiErr('like',String(e))});
+  like:function(login,url,method,body){
+   fetch(url,opts(method,body))
+    .then(function(r){var st=r.status;return r.text().then(function(t){Rec.apiLike2(login,st,t)})}).catch(function(e){Rec.apiErr('like',String(e))});
   }
  };
 })();
@@ -148,7 +190,7 @@ private const val AUTO_JS = """
  }
  function tryClick(){
   if(!window.__autoOn || document.hidden) return;
-  if(!/(^|\.)(rambler\.ru|sber\.ru|sberbank\.ru|sberid\.ru)$/.test(location.hostname)) return;
+  if(!/(^|\.)(rambler\.ru|sber\.ru|sberbank\.ru|sberid\.ru|mamba\.ru)$/.test(location.hostname)) return;
   var now=Date.now();
   var els=document.querySelectorAll(SEL), seen=[], hit=null;
   for(var i=0;i<els.length;i++){
@@ -172,7 +214,13 @@ private const val AUTO_JS = """
 })();
 """
 
-class MainActivity : Activity() {
+open class MainActivity : Activity() {
+    // Какой сервис ведёт это окно. Окно Mamba (MambaActivity) работает в своём процессе, поэтому оба идут одновременно
+    protected open fun serviceId(): String = "rambler"
+    private fun selfCls(): Class<*> = if (serviceId() == "mamba") MambaActivity::class.java else MainActivity::class.java
+    private fun keepCls(): Class<*> = if (serviceId() == "mamba") MambaKeepAliveService::class.java else KeepAliveService::class.java
+    private fun nid(n: Int): Int = if (serviceId() == "mamba") n + 10 else n
+
     private lateinit var web: WebView
     private lateinit var prefs: SharedPreferences
     private lateinit var panels: List<View>
@@ -184,6 +232,10 @@ class MainActivity : Activity() {
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
     private lateinit var etLikeUrl: EditText
+    private lateinit var etLikeMethod: EditText
+    private lateinit var etLikeBody: EditText
+    private lateinit var etSearchUrl: EditText
+    private lateinit var svc: Svc
     private lateinit var tabBtns: List<Button>
     private lateinit var logText: TextView
     private lateinit var logStats: TextView
@@ -265,7 +317,7 @@ class MainActivity : Activity() {
 
     private val errResume = Runnable {
         if (running) {
-            web.loadUrl(SITE)
+            web.loadUrl(svc.site)
             nextAt = SystemClock.elapsedRealtime() + 8000
             post(8000)
         }
@@ -317,20 +369,28 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("liker", Context.MODE_PRIVATE)
-        logFile = File(filesDir, "liker.log")
+        svc = SERVICES.firstOrNull { it.id == serviceId() } ?: SERVICES[0]
+        // у каждого сервиса свои cookie и данные сайта: отдельная папка WebView (нужна до создания первого WebView в процессе)
+        if (svc.id != "rambler" && Build.VERSION.SDK_INT >= 28) {
+            try {
+                WebView.setDataDirectorySuffix(svc.id)
+            } catch (e: Exception) {
+            }
+        }
+        prefs = getSharedPreferences(svc.prefsName, Context.MODE_PRIVATE)
+        logFile = File(filesDir, "liker${svc.suffix}.log")
         try {
             if (logFile.exists()) logs.addAll(logFile.readLines().takeLast(LOG_MAX))
         } catch (e: Exception) {
         }
-        likedFile = File(filesDir, "liked.txt")
+        likedFile = File(filesDir, "liked${svc.suffix}.txt")
         try {
             if (likedFile.exists()) {
                 for (l in likedFile.readLines().takeLast(LIKED_MAX)) if (l.isNotBlank()) liked.add(l.trim())
             }
         } catch (e: Exception) {
         }
-        repFile = File(filesDir, "likes_report.tsv")
+        repFile = File(filesDir, "likes_report${svc.suffix}.tsv")
         try {
             if (repFile.exists()) {
                 for (line in repFile.readLines().takeLast(REP_MAX)) {
@@ -359,8 +419,8 @@ class MainActivity : Activity() {
         liveInstance = this
         try {
             val nmc = getSystemService(NotificationManager::class.java)
-            nmc.cancel(2)
-            nmc.cancel(3)
+            nmc.cancel(nid(2))
+            nmc.cancel(nid(3))
         } catch (e: Exception) {
         }
         loadSearch()
@@ -387,7 +447,7 @@ class MainActivity : Activity() {
                 row(
                     btn("◀ Назад") { if (web.canGoBack()) web.goBack() },
                     btn("⟳ Обновить") { web.reload() },
-                    btn("Домой") { web.loadUrl(SITE) }
+                    btn("Домой") { web.loadUrl(svc.site) }
                 )
             )
         }
@@ -459,13 +519,39 @@ class MainActivity : Activity() {
         etLikeUrl = EditText(this).apply {
             hint = "URL лайка"
             setSingleLine()
-            setText(prefs.getString("likeUrl", DEFAULT_LIKE_URL))
+            setText(prefs.getString("likeUrl", svc.defLikeUrl))
+        }
+        etLikeMethod = EditText(this).apply {
+            hint = "GET или POST"
+            setSingleLine()
+            setText(prefs.getString("likeMethod", svc.defLikeMethod))
+        }
+        etLikeBody = EditText(this).apply {
+            hint = "тело запроса лайка (если есть)"
+            setSingleLine()
+            setText(prefs.getString("likeBody", svc.defLikeBody))
+        }
+        etSearchUrl = EditText(this).apply {
+            hint = "URL поиска"
+            setSingleLine()
+            setText(prefs.getString("searchUrl", svc.defSearchUrl))
         }
         val likesScroll = ScrollView(this).apply {
             addView(
                 LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(dp(12), dp(12), dp(12), dp(12))
+                    addView(TextView(this@MainActivity).apply { text = "Сервис (открывается отдельное окно, оба сервиса могут работать одновременно):" })
+                    addView(
+                        row(
+                            *SERVICES.map { sv ->
+                                btn(sv.title) { switchService(sv.id) }.apply {
+                                    alpha = if (sv.id == svc.id) 1f else 0.5f
+                                    setTypeface(null, if (sv.id == svc.id) Typeface.BOLD else Typeface.NORMAL)
+                                }
+                            }.toTypedArray()
+                        )
+                    )
                     addView(status)
                     addView(TextView(this@MainActivity).apply { text = "\nЛимит в сутки (макс. $MAX_LIMIT):" })
                     addView(etLimit)
@@ -475,6 +561,22 @@ class MainActivity : Activity() {
                     addView(row(etWinFrom, etWinTo))
                     addView(TextView(this@MainActivity).apply { text = "URL лайка ({login} подставляется сам):" })
                     addView(etLikeUrl)
+                    addView(TextView(this@MainActivity).apply { text = "Метод лайка:" })
+                    addView(etLikeMethod)
+                    addView(TextView(this@MainActivity).apply { text = "Тело запроса лайка ({login} подставляется сам):" })
+                    addView(etLikeBody)
+                    addView(TextView(this@MainActivity).apply { text = "URL поиска ({offset} подставляется сам):" })
+                    addView(etSearchUrl)
+                    addView(btn("🎯 Определить запросы с сайта") { captureRequests() })
+                    if (svc.id != "rambler") {
+                        addView(TextView(this@MainActivity).apply {
+                            textSize = 12f
+                            text = "Как настроить ${svc.title}: 1) вкладка «Браузер», войди в аккаунт. " +
+                                "2) Открой ленту анкет (поиск) и пролистай её. 3) Поставь вручную один лайк. " +
+                                "4) Вернись сюда и нажми «Определить запросы с сайта»: приложение найдёт поиск и лайк " +
+                                "в записанных запросах и заполнит поля выше. 5) Проверь их, поставь лимит 3 и жми «Старт»."
+                        })
+                    }
                     addView(TextView(this@MainActivity).apply {
                         textSize = 12f
                         text = "\nПриложение берёт анкеты из поиска сайта (с твоими фильтрами) и шлёт лайки " +
@@ -491,7 +593,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             addView(likesScroll, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(row(btn("▶ Старт") { startLikes() }, btn("■ Стоп") { stopLikes("остановлено") }))
-            addView(row(btn("Сохранить") { saveSettings() }, btn("URL по умолчанию") { etLikeUrl.setText(DEFAULT_LIKE_URL) }))
+            addView(row(btn("Сохранить") { saveSettings() }, btn("URL по умолчанию") { etLikeUrl.setText(svc.defLikeUrl) }))
             addView(btn("Начать поиск анкет с начала") {
                 resetSearch(false)
                 logMsg("🔄 Поиск сброшен вручную: следующий запрос с первой анкеты (уже лайкнутые, ${liked.size}, пропускаются)")
@@ -499,7 +601,7 @@ class MainActivity : Activity() {
             })
             autoBtn = btn("") {}
             autoBtn.setOnClickListener {
-                val on = !prefs.getBoolean("autoLogin", true)
+                val on = !prefs.getBoolean("autoLogin", svc.id == "rambler")
                 prefs.edit().putBoolean("autoLogin", on).apply()
                 refreshAutoBtn()
                 pushAuto()
@@ -592,7 +694,7 @@ class MainActivity : Activity() {
         updateStatus()
         h.postDelayed(uiTick, 3000)
         // по умолчанию лайки всегда запускаются сами; не запускаются только после нажатия «Стоп»
-        if (prefs.getBoolean("wantRunning", true)) {
+        if (prefs.getBoolean("wantRunning", svc.id == "rambler")) {
             h.postDelayed({
                 if (!running) {
                     logMsg("▶ Автозапуск лайков")
@@ -604,8 +706,8 @@ class MainActivity : Activity() {
 
     private fun setupWeb() {
         web = WebView(this)
-        if (!cookiesRestored) {
-            cookiesRestored = true
+        if (cookiesRestoredFor != svc.id) {
+            cookiesRestoredFor = svc.id
             val n = restoreCookies()
             if (n > 0) logMsg("🔑 Восстановлена сохранённая сессия (cookie: $n)")
         }
@@ -626,18 +728,18 @@ class MainActivity : Activity() {
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                view?.evaluateJavascript(HOOK_JS + API_JS, null)
+                view?.evaluateJavascript(HOOK_JS + apiJs(), null)
                 view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
-                view?.evaluateJavascript(HOOK_JS + API_JS, null)
+                view?.evaluateJavascript(HOOK_JS + apiJs(), null)
                 view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
                 CookieManager.getInstance().flush()
                 logMsg("Страница загружена: ${(url ?: "").substringBefore('?').take(70)}")
             }
         }
-        web.loadUrl(SITE)
+        web.loadUrl(svc.site)
     }
 
     inner class Bridge {
@@ -647,7 +749,7 @@ class MainActivity : Activity() {
                 val o = JSONObject(s)
                 o.put("t", SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()))
                 // запоминаем фильтры поиска, которые шлёт сам сайт
-                if (o.optString("u").contains("/api/a-search") && o.optString("p").contains("pol=")) {
+                if (svc.id == "rambler" && o.optString("u").contains("/api/a-search") && o.optString("p").contains("pol=")) {
                     val nb = o.optString("p")
                     if (prefs.getString("sbody", "") != nb) prefs.edit().putString("sbody", nb).apply()
                 }
@@ -666,7 +768,12 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun apiLike(login: String, text: String) {
-            runOnUiThread { onLike(login, text) }
+            runOnUiThread { onLike(login, text, 200) }
+        }
+
+        @JavascriptInterface
+        fun apiLike2(login: String, status: Int, text: String) {
+            runOnUiThread { onLike(login, text, status) }
         }
 
         @JavascriptInterface
@@ -747,7 +854,7 @@ class MainActivity : Activity() {
 
     private fun updateTop() {
         if (!::topBar.isInitialized) return
-        val t = "RamblerLiker $verName  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
+        val t = "${svc.title} Liker $verName  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + verdict()
         if (topBar.text.toString() != t) topBar.text = t
     }
 
@@ -811,7 +918,7 @@ class MainActivity : Activity() {
         prefs.edit().putBoolean("autoLogin", false).apply()
         refreshAutoBtn()
         pushAuto()
-        web.loadUrl(SITE)
+        web.loadUrl(svc.site)
         logMsg("Сессия очищена (cookie и данные сайта удалены). Автовход выключен, чтобы не войти сразу обратно: включи его кнопкой на вкладке «Лайки»")
         toast("Сессия очищена")
     }
@@ -874,24 +981,259 @@ class MainActivity : Activity() {
         startActivity(Intent.createChooser(i, "Поделиться"))
     }
 
+    // ---------- сервисы ----------
+    private fun onSite(): Boolean {
+        val u = web.url ?: return false
+        return svc.hosts.any { u.startsWith(it) }
+    }
+
+    // Открывает окно другого сервиса: оно живёт в своём процессе, текущее не останавливается
+    private fun switchService(id: String) {
+        if (id == svc.id) return
+        val cls = if (id == "mamba") MambaActivity::class.java else MainActivity::class.java
+        startActivity(Intent(this, cls))
+    }
+
+    private val listKeys = listOf("data", "user", "users", "items", "result", "profiles", "list", "contacts", "anketas")
+
+    // Список анкет в ответе поиска: на верхнем уровне или на один уровень глубже
+    private fun findList(j: JSONObject): JSONArray? {
+        for (k in listKeys) {
+            val v = j.opt(k)
+            if (v is JSONArray) return v
+            if (v is JSONObject) {
+                for (k2 in listKeys) {
+                    val w = v.opt(k2)
+                    if (w is JSONArray) return w
+                }
+            }
+        }
+        return null
+    }
+
+    // Если анкета лежит во вложенном объекте («user», «profile»), берём его
+    private fun unwrap(o: JSONObject): JSONObject {
+        if (svc.id == "rambler" || idOf(o).isNotEmpty()) return o
+        for (nk in listOf("user", "profile", "anketa")) {
+            val n = o.optJSONObject(nk) ?: continue
+            if (idOf(n).isNotEmpty()) return n
+        }
+        return o
+    }
+
+    private fun idOf(o: JSONObject): String {
+        if (svc.id == "rambler") return o.optString("login")
+        val k = prefs.getString("idKey", "") ?: ""
+        if (k.isNotEmpty()) {
+            val v = pickStr(o, k)
+            if (v.isNotEmpty()) return v
+        }
+        return pickStr(o, "login", "id", "user_id", "uid", "oid", "userId", "anketa_id")
+    }
+
+    private fun alreadyLiked(o: JSONObject): Boolean {
+        if (svc.id == "rambler") return o.optInt("own_like", 0) != 0
+        for (k in listOf("own_like", "liked", "is_liked", "isLiked")) {
+            val v = o.opt(k) ?: continue
+            if (v == true || v == 1 || v == "1" || v == "true") return true
+        }
+        return false
+    }
+
+    private fun parseLike(text: String): JSONObject {
+        if (svc.id == "rambler") return JSONObject(text)
+        return try {
+            JSONObject(text)
+        } catch (e: Exception) {
+            JSONObject()
+        }
+    }
+
+    // Итог лайка: 0 успех, 24 вход слетел, остальное ошибка. Rambler: как раньше, по полю errno
+    private fun likeCode(j: JSONObject, text: String, status: Int): Int {
+        if (svc.id == "rambler") return j.optInt("errno", -1)
+        if (status == 401 || status == 403) return 24
+        if (status !in 200..299) return status
+        if (text.trimStart().startsWith("<")) return -1 // вместо ответа пришла HTML-страница (вход, капча)
+        if (j.has("errno")) return j.optInt("errno", -1)
+        if (!j.optBoolean("success", true) || !j.optBoolean("ok", true)) return -1
+        val st = j.optString("status", "").lowercase()
+        if (st == "error" || st == "fail" || st == "failed") return -1
+        val er = j.opt("error")
+        if (er != null && er != JSONObject.NULL) {
+            val t = er.toString()
+            if (t.isNotEmpty() && t != "0" && t != "false" && t != "[]" && t != "{}") return -1
+        }
+        return 0
+    }
+
+    // Адрес запроса относительно сайта; null, если запрос ушёл на чужой домен
+    private fun relUrl(u: String): String? {
+        if (u.isEmpty() || u.startsWith("//")) return null
+        if (!u.startsWith("http")) return u
+        val p = Uri.parse(u)
+        val host = p.host ?: return null
+        if (!host.endsWith(svc.hostSuffix)) return null
+        val q = p.encodedQuery
+        return (p.encodedPath ?: "/") + (if (q != null) "?$q" else "")
+    }
+
+    // Находит в записанных запросах поиск анкет и лайк и подставляет их в настройки.
+    // Сначала в «Браузере» открой ленту анкет и поставь один лайк вручную.
+    private fun captureRequests() {
+        val sample = rec.filter { !isNoise(it) }
+        if (sample.isEmpty()) {
+            toast("Нет записанных запросов: открой сайт во вкладке «Браузер»")
+            return
+        }
+        val idRx = Regex("\"(id|login|user_id|uid|oid|userId|anketa_id)\"\\s*:\\s*\"?([A-Za-z0-9_\\-]{3,})\"?")
+        var listReq: JSONObject? = null
+        var idKey = ""
+        val ids = HashSet<String>()
+        for (o in sample.reversed()) {
+            val r = o.optString("r")
+            if (!(r.startsWith("{") || r.startsWith("["))) continue
+            val ms = idRx.findAll(r).toList()
+            if (ms.size >= 3) {
+                listReq = o
+                idKey = ms[0].groupValues[1]
+                for (m in ms) ids.add(m.groupValues[2])
+                break
+            }
+        }
+        val likeRx = Regex("(?<![A-Za-z])(like|vote|encounter|rating|sympath)", RegexOption.IGNORE_CASE)
+        var likeReq: JSONObject? = null
+        for (o in sample.reversed()) {
+            if (o === listReq) continue
+            if (o.optInt("s") !in 200..299) continue
+            if (o.optString("r").length > 600) continue
+            if (likeRx.containsMatchIn(o.optString("u") + " " + o.optString("p"))) {
+                likeReq = o
+                break
+            }
+        }
+        val e = prefs.edit()
+        var did = false
+
+        if (listReq == null) {
+            logMsg("🎯 Поиск анкет не нашёл: нужен ответ со списком анкет. Открой ленту/поиск в «Браузере», пролистай и повтори")
+        } else {
+            val su0 = relUrl(listReq.optString("u"))
+            if (su0 == null) {
+                logMsg("🎯 Поиск идёт на другой домен (${listReq.optString("u").take(80)}): из страницы сайта он не вызовется, пришли мне эту строку")
+            } else {
+                var su: String = su0
+                var sb = listReq.optString("p")
+                val sm = listReq.optString("m").uppercase().ifEmpty { "GET" }
+                val offRx = Regex("(?<![A-Za-z])(offset|start|skip)=\\d+")
+                val offJs = Regex("\"(offset|start|skip)\"\\s*:\\s*\\d+")
+                var paged = false
+                if (offRx.containsMatchIn(su)) {
+                    su = offRx.replace(su) { it.groupValues[1] + "={offset}" }
+                    paged = true
+                } else if (offRx.containsMatchIn(sb)) {
+                    sb = offRx.replace(sb) { it.groupValues[1] + "={offset}" }
+                    paged = true
+                } else if (offJs.containsMatchIn(sb)) {
+                    sb = offJs.replace(sb) { "\"" + it.groupValues[1] + "\":{offset}" }
+                    paged = true
+                }
+                e.putString("searchUrl", su).putString("searchMethod", sm).putString("sbody", sb).putString("idKey", idKey)
+                did = true
+                logMsg("🎯 Поиск: $sm ${su.take(120)}")
+                if (sb.isNotEmpty()) logMsg("   тело: ${sb.take(200)}")
+                logMsg("   поле id анкеты: «$idKey»" + if (paged) "" else ". ⚠ Параметр смещения (offset/start/skip) не найден: если лента листается иначе, впиши {offset} в URL поиска сам")
+            }
+        }
+
+        if (likeReq == null) {
+            logMsg("🎯 Лайк не нашёл: поставь один лайк вручную в «Браузере» и нажми кнопку ещё раз")
+        } else {
+            val lu0 = relUrl(likeReq.optString("u"))
+            if (lu0 == null) {
+                logMsg("🎯 Лайк идёт на другой домен (${likeReq.optString("u").take(80)}): из страницы сайта он не вызовется")
+            } else {
+                var lu: String = lu0
+                var lb = likeReq.optString("p")
+                val lm = likeReq.optString("m").uppercase().ifEmpty { "GET" }
+                var replaced = false
+                for (id in ids.filter { it.length >= 4 }.sortedByDescending { it.length }) {
+                    if (lu.contains(id)) {
+                        lu = lu.replaceFirst(id, "{login}")
+                        replaced = true
+                        break
+                    }
+                    if (lb.contains(id)) {
+                        lb = lb.replaceFirst(id, "{login}")
+                        replaced = true
+                        break
+                    }
+                }
+                if (!replaced) {
+                    val d = Regex("\\d{5,}")
+                    val m1 = d.find(lu)
+                    val m2 = d.find(lb)
+                    if (m1 != null) {
+                        lu = lu.replaceFirst(m1.value, "{login}")
+                        replaced = true
+                    } else if (m2 != null) {
+                        lb = lb.replaceFirst(m2.value, "{login}")
+                        replaced = true
+                    }
+                }
+                if (!replaced) {
+                    logMsg("🎯 Лайк найден ($lm ${lu.take(100)}), но id анкеты в нём не нашёл: впиши {login} в URL или тело сам")
+                } else {
+                    e.putString("likeUrl", lu).putString("likeMethod", lm).putString("likeBody", lb)
+                    did = true
+                    logMsg("🎯 Лайк: $lm ${lu.take(120)}")
+                    if (lb.isNotEmpty()) logMsg("   тело: ${lb.take(200)}")
+                    logMsg("   id анкеты заменён на {login}. Проверь запись и сделай тест с лимитом 3")
+                }
+            }
+        }
+
+        if (did) {
+            e.apply()
+            etLikeUrl.setText(prefs.getString("likeUrl", svc.defLikeUrl))
+            etLikeMethod.setText(prefs.getString("likeMethod", svc.defLikeMethod))
+            etLikeBody.setText(prefs.getString("likeBody", svc.defLikeBody))
+            etSearchUrl.setText(prefs.getString("searchUrl", svc.defSearchUrl))
+            toast("Запросы определены, смотри журнал")
+        } else {
+            toast("Ничего не нашёл, смотри журнал")
+        }
+    }
+
     // ---------- лайки через API ----------
     private fun saveSettings(silent: Boolean = false): Boolean {
         val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
-        val url = etLikeUrl.text.toString().trim().ifEmpty { DEFAULT_LIKE_URL }
-        if (!url.contains("{login}")) {
-            toast("В URL лайка должно быть {login}")
+        val url = etLikeUrl.text.toString().trim().ifEmpty { svc.defLikeUrl }
+        val lm = etLikeMethod.text.toString().trim().uppercase().let { if (it == "GET" || it == "POST" || it == "PUT") it else svc.defLikeMethod }
+        val lb = etLikeBody.text.toString().trim()
+        val su = etSearchUrl.text.toString().trim().ifEmpty { svc.defSearchUrl }
+        if (!url.contains("{login}") && !lb.contains("{login}")) {
+            toast("В URL или теле лайка должно быть {login}. Для ${svc.title} нажми «Определить запросы с сайта»")
+            return false
+        }
+        if (su.isEmpty()) {
+            toast("Не задан URL поиска. Нажми «Определить запросы с сайта»")
             return false
         }
         val (pa, pb) = parseRate(etRate.text.toString())
         val wf = (etWinFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_FROM).coerceIn(0, 23)
         val wt = (etWinTo.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_TO).coerceIn(wf + 1, 24)
         prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
-            .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url).apply()
+            .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
+            .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su).apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())
         etRate.setText(rateText())
         etLikeUrl.setText(url)
+        etLikeMethod.setText(lm)
+        etLikeBody.setText(lb)
+        etSearchUrl.setText(su)
         if (!silent) toast("Сохранено")
         return true
     }
@@ -916,7 +1258,7 @@ class MainActivity : Activity() {
         nightLogged = false
         logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, темп ${rateText()} лайков в минуту, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         logMsg("🔎 Продолжаю поиск с анкеты №$offset, в очереди: ${queue.size}, уже лайкнуто ранее: ${liked.size}")
-        startForegroundService(Intent(this, KeepAliveService::class.java))
+        startForegroundService(Intent(this, keepCls()))
         prefs.edit().putBoolean("wantRunning", true).apply()
         lastNotif = ""
         errLevel = 0
@@ -945,10 +1287,10 @@ class MainActivity : Activity() {
         h.removeCallbacks(errResume)
         prefs.edit().putBoolean("wantRunning", false).apply()
         try {
-            getSystemService(NotificationManager::class.java).cancel(2)
+            getSystemService(NotificationManager::class.java).cancel(nid(2))
         } catch (e: Exception) {
         }
-        stopService(Intent(this, KeepAliveService::class.java))
+        stopService(Intent(this, keepCls()))
         if (reason != "остановлено") lastError = reason
         if (was) {
             logMsg("■ Стоп: ${if (reason == "остановлено") "остановлено вручную" else reason}. Лайков за сессию: $sessLikes")
@@ -995,16 +1337,16 @@ class MainActivity : Activity() {
                 authPause("Автовход не завершился за 2.5 минуты")
                 return
             }
-            if (web.url?.startsWith(SITE) != true) {
+            if (!onSite()) {
                 nextAt = SystemClock.elapsedRealtime() + 5000
                 post(5000)
                 updateStatus()
                 return
             }
         }
-        if (web.url?.startsWith(SITE) != true) {
-            logMsg("Страница не на сайте Rambler, загружаю заново")
-            web.loadUrl(SITE)
+        if (!onSite()) {
+            logMsg("Страница не на сайте ${svc.title}, загружаю заново")
+            web.loadUrl(svc.site)
             nextAt = SystemClock.elapsedRealtime() + 6000
             post(6000)
             return
@@ -1053,19 +1395,30 @@ class MainActivity : Activity() {
         inflight = ""
         logMsg("🔎 Запрашиваю анкеты из поиска (offset=$offset)")
         h.postDelayed(wd, 20000)
-        web.evaluateJavascript("window.__lk && window.__lk.batch($offset, ${JSONObject.quote(body)});", null)
+        val surl = (prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl).replace("{offset}", offset.toString())
+        val smeth = prefs.getString("searchMethod", svc.defSearchMethod) ?: svc.defSearchMethod
+        val sbod = body.replace("{offset}", offset.toString())
+        web.evaluateJavascript(
+            "window.__lk && window.__lk.batch(${JSONObject.quote(surl)}, ${JSONObject.quote(smeth)}, ${JSONObject.quote(sbod)});", null
+        )
     }
 
     private fun sendLike(login: String) {
-        val tmpl = prefs.getString("likeUrl", DEFAULT_LIKE_URL) ?: DEFAULT_LIKE_URL
-        val url = tmpl.replace("{login}", URLEncoder.encode(login, "UTF-8"))
+        val tmpl = prefs.getString("likeUrl", svc.defLikeUrl) ?: svc.defLikeUrl
+        val enc = URLEncoder.encode(login, "UTF-8")
+        val url = tmpl.replace("{login}", enc)
+        val method = prefs.getString("likeMethod", svc.defLikeMethod) ?: svc.defLikeMethod
+        val bodyT = prefs.getString("likeBody", svc.defLikeBody) ?: ""
+        val isJson = bodyT.trimStart().let { it.startsWith("{") || it.startsWith("[") }
+        val body = bodyT.replace("{login}", if (isJson) login else enc)
         waiting = true
         inflight = login
         inflightKind = 2
         likeSentAt = SystemClock.elapsedRealtime()
         h.postDelayed(wd, 20000)
         web.evaluateJavascript(
-            "window.__lk && window.__lk.like(${JSONObject.quote(login)}, ${JSONObject.quote(url)});", null
+            "window.__lk && window.__lk.like(${JSONObject.quote(login)}, ${JSONObject.quote(url)}, " +
+                "${JSONObject.quote(method)}, ${JSONObject.quote(body)});", null
         )
     }
 
@@ -1076,16 +1429,17 @@ class MainActivity : Activity() {
         inflightKind = 0
         if (!running) return
         try {
-            val j = JSONObject(text)
-            val arr = j.optJSONArray("data") ?: j.optJSONArray("user")
+            val j = if (svc.id != "rambler" && text.trimStart().startsWith("[")) JSONObject().put("data", JSONArray(text)) else JSONObject(text)
+            val arr = if (svc.id == "rambler") (j.optJSONArray("data") ?: j.optJSONArray("user")) else findList(j)
             if (arr == null) {
                 handleError("поиск: нет списка анкет: ${text.take(100)}")
                 return
             }
             var added = 0
             for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val lg = o.optString("login")
+                val o0 = arr.optJSONObject(i) ?: continue
+                val o = unwrap(o0)
+                val lg = idOf(o)
                 if (lg.isEmpty()) continue
                 if (!keysLogged) {
                     keysLogged = true
@@ -1095,14 +1449,19 @@ class MainActivity : Activity() {
                     logMsg("🔎 Поля анкеты: ${keys.joinToString(", ")}")
                     logMsg("   пример: ${o.toString().replace(lg, mask(lg)).take(600)}")
                 }
-                if (o.optInt("own_like", 0) == 0 && !liked.contains(lg) && seen.add(lg)) {
+                if (!alreadyLiked(o) && !liked.contains(lg) && seen.add(lg)) {
                     queue.addLast(lg)
                     profInfo[lg] = profileInfo(o)
                     added++
                 }
             }
             offset += arr.length()
-            hasMore = j.optInt("has_more", 0) == 1
+            hasMore = when {
+                svc.id == "rambler" -> j.optInt("has_more", 0) == 1
+                j.has("has_more") -> j.optInt("has_more", 0) == 1
+                j.has("hasMore") -> j.optBoolean("hasMore", false)
+                else -> arr.length() > 0
+            }
             rowErr = 0
             logMsg("🔎 Получено анкет: ${arr.length()}, новых для лайка: $added, в очереди: ${queue.size}, есть ещё: ${if (hasMore) "да" else "нет"}")
             if (added == 0 && !hasMore) {
@@ -1123,7 +1482,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun curBody(): String = (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY }
+    private fun curBody(): String = (prefs.getString("sbody", "") ?: "").ifEmpty { svc.defSbody }
 
     // Запоминаем лайкнутую анкету навсегда (файл), чтобы после стопа/перезапуска не запрашивать её снова
     private fun markLiked(login: String) {
@@ -1290,7 +1649,7 @@ class MainActivity : Activity() {
         if (to.isEmpty()) to = pickStr(o, "tage", "age_to", "ageto")
         if (from.isEmpty()) from = findNested(o, listOf("bage", "age_from"), 0)
         if (to.isEmpty()) to = findNested(o, listOf("tage", "age_to"), 0)
-        val city = pickStr(o, "city_n", "city_name")
+        val city = if (svc.id == "rambler") pickStr(o, "city_n", "city_name") else pickStr(o, "city_n", "city_name", "city")
         return Prof(name, age, from, to, city)
     }
 
@@ -1325,7 +1684,7 @@ class MainActivity : Activity() {
         try {
             val cm = CookieManager.getInstance()
             val m = LinkedHashMap<String, String>()
-            for (u in COOKIE_URLS) {
+            for (u in svc.cookieUrls) {
                 val c = cm.getCookie(u) ?: continue
                 for (part in c.split(";")) {
                     val t = part.trim()
@@ -1342,8 +1701,10 @@ class MainActivity : Activity() {
             for ((k, v) in m) cj.put(k, v)
             val j = JSONObject()
             j.put("cookies", cj)
-            j.put("sbody", (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY })
-            j.put("like_url", prefs.getString("likeUrl", DEFAULT_LIKE_URL) ?: DEFAULT_LIKE_URL)
+            j.put("service", svc.id)
+            j.put("search_url", prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl)
+            j.put("sbody", (prefs.getString("sbody", "") ?: "").ifEmpty { svc.defSbody })
+            j.put("like_url", prefs.getString("likeUrl", svc.defLikeUrl) ?: svc.defLikeUrl)
             j.put("ua", web.settings.userAgentString)
             j.put("age_from_key", prefs.getString("ageFromKey", "") ?: "")
             j.put("age_to_key", prefs.getString("ageToKey", "") ?: "")
@@ -1359,7 +1720,7 @@ class MainActivity : Activity() {
         try {
             val cm = CookieManager.getInstance()
             val m = LinkedHashMap<String, String>()
-            for (u in COOKIE_URLS) {
+            for (u in svc.cookieUrls) {
                 val c = cm.getCookie(u) ?: continue
                 for (part in c.split(";")) {
                     val t = part.trim()
@@ -1393,10 +1754,10 @@ class MainActivity : Activity() {
                 val v = j.optString(k)
                 val attrs = when {
                     k.startsWith("__Host-") -> "; Path=/; Secure; Max-Age=2592000"
-                    k.startsWith("__Secure-") -> "; Domain=.rambler.ru; Path=/; Secure; Max-Age=2592000"
-                    else -> "; Domain=.rambler.ru; Path=/; Max-Age=2592000"
+                    k.startsWith("__Secure-") -> "; Domain=${svc.cookieDomain}; Path=/; Secure; Max-Age=2592000"
+                    else -> "; Domain=${svc.cookieDomain}; Path=/; Max-Age=2592000"
                 }
-                cm.setCookie("https://m.dating.rambler.ru/", "$k=$v$attrs")
+                cm.setCookie(svc.site + "/", "$k=$v$attrs")
                 n++
             }
             cm.flush()
@@ -1503,7 +1864,7 @@ class MainActivity : Activity() {
         lastNotif = text
         lastNotifAt = SystemClock.elapsedRealtime()
         try {
-            val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val pi = PendingIntent.getActivity(this, 0, Intent(this, selfCls()), PendingIntent.FLAG_IMMUTABLE)
             val n = Notification.Builder(this, "liker")
                 .setContentTitle("Лайки идут")
                 .setContentText(text)
@@ -1512,7 +1873,7 @@ class MainActivity : Activity() {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .build()
-            getSystemService(NotificationManager::class.java).notify(1, n)
+            getSystemService(NotificationManager::class.java).notify(nid(1), n)
         } catch (e: Exception) {
         }
     }
@@ -1528,7 +1889,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun autoFlag(): Boolean = autoOn || prefs.getBoolean("autoLogin", true)
+    private fun autoFlag(): Boolean = autoOn || prefs.getBoolean("autoLogin", svc.id == "rambler")
 
     private fun pushAuto() {
         try {
@@ -1538,7 +1899,7 @@ class MainActivity : Activity() {
     }
 
     private fun refreshAutoBtn() {
-        autoBtn.text = if (prefs.getBoolean("autoLogin", true)) "Автовход: вкл" else "Автовход: выкл"
+        autoBtn.text = if (prefs.getBoolean("autoLogin", svc.id == "rambler")) "Автовход: вкл" else "Автовход: выкл"
     }
 
     private fun setAuto(on: Boolean) {
@@ -1562,7 +1923,7 @@ class MainActivity : Activity() {
         if (authFails == 1) {
             val n = restoreCookies()
             if (n > 0) logMsg("🔑 Вернул сохранённую сессию (cookie: $n)")
-            web.loadUrl(SITE)
+            web.loadUrl(svc.site)
         }
         queue.addFirst(login)
         nextAt = SystemClock.elapsedRealtime() + 25000
@@ -1656,12 +2017,12 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun onLike(login: String, text: String) {
+    private fun onLike(login: String, text: String, status: Int = 200) {
         val stale = !waiting || inflightKind != 2 || login != inflight
         if (stale) {
             // Запоздалый ответ (после стопа или тайм-аута): лайк мог реально пройти, учитываем, но цикл не трогаем
             try {
-                if (login.isNotEmpty() && !liked.contains(login) && JSONObject(text).optInt("errno", -1) == 0) {
+                if (login.isNotEmpty() && !liked.contains(login) && likeCode(parseLike(text), text, status) == 0) {
                     prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).apply()
                     markLiked(login)
                     addReport(login)
@@ -1678,8 +2039,9 @@ class MainActivity : Activity() {
         inflight = ""
         if (!running) return
         try {
-            val j = JSONObject(text)
-            if (j.optInt("errno", -1) == 0) {
+            val j = parseLike(text)
+            val code = likeCode(j, text, status)
+            if (code == 0) {
                 prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).apply()
                 sessLikes++
                 hourCount++
@@ -1720,10 +2082,10 @@ class MainActivity : Activity() {
                     return
                 }
                 scheduleNext(extraSec = j.optInt("likestimeout", 0))
-            } else if (j.optInt("errno", -1) == 24) {
+            } else if (code == 24) {
                 onAuthLost(login)
             } else {
-                handleError("errno=${j.optInt("errno", -1)}: ${text.take(100)}")
+                handleError("errno=$code: ${text.take(100)}")
             }
         } catch (e: Exception) {
             handleError("ответ лайка не разобран: ${text.take(100)}")
@@ -1765,7 +2127,7 @@ class MainActivity : Activity() {
         try {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(android.app.NotificationChannel("liker_alert", "Liker: важное", NotificationManager.IMPORTANCE_HIGH))
-            val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val pi = PendingIntent.getActivity(this, 0, Intent(this, selfCls()), PendingIntent.FLAG_IMMUTABLE)
             val n = Notification.Builder(this, "liker_alert")
                 .setContentTitle(title)
                 .setContentText(text)
@@ -1773,7 +2135,7 @@ class MainActivity : Activity() {
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .build()
-            nm.notify(id, n)
+            nm.notify(nid(id), n)
         } catch (e: Exception) {
         }
     }

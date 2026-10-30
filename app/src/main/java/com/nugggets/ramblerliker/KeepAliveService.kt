@@ -13,7 +13,12 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 
-class KeepAliveService : Service() {
+open class KeepAliveService : Service() {
+    // Для Mamba служба в своём процессе со своими id уведомлений (см. MambaKeepAliveService)
+    protected open val notifId: Int = 1
+    protected open val alertId: Int = 2
+    protected open val target: Class<*> get() = MainActivity::class.java
+    protected open val lockTag: String = "liker"
     private var wl: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
 
@@ -28,7 +33,7 @@ class KeepAliveService : Service() {
             NotificationChannel("liker_alert", "Liker: важное", NotificationManager.IMPORTANCE_HIGH)
         )
         val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+            this, 0, Intent(this, target), PendingIntent.FLAG_IMMUTABLE
         )
         val n = Notification.Builder(this, "liker")
             .setContentTitle("Лайки идут")
@@ -40,16 +45,16 @@ class KeepAliveService : Service() {
             .build()
         if (Build.VERSION.SDK_INT >= 34) {
             // specialUse: без тайм-аута, в отличие от dataSync на новых версиях Android
-            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(notifId, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            startForeground(notifId, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
-            startForeground(1, n)
+            startForeground(notifId, n)
         }
         if (intent == null) {
             // Систему перезапустила службу после закрытия приложения: лайки не идут, сообщаем об этом
             try {
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                startActivity(Intent(this, target).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             } catch (e: Exception) {
             }
             val alert = Notification.Builder(this, "liker_alert")
@@ -59,7 +64,7 @@ class KeepAliveService : Service() {
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .build()
-            nm.notify(2, alert)
+            nm.notify(alertId, alert)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -71,7 +76,7 @@ class KeepAliveService : Service() {
     private fun acquireLocks() {
         if (wl == null) {
             val pm = getSystemService(PowerManager::class.java)
-            wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "liker:run").also {
+            wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$lockTag:run").also {
                 it.setReferenceCounted(false)
                 it.acquire()
             }
@@ -84,7 +89,7 @@ class KeepAliveService : Service() {
                 } else {
                     WifiManager.WIFI_MODE_FULL_HIGH_PERF
                 }
-                wifi = wm.createWifiLock(mode, "liker:wifi").also {
+                wifi = wm.createWifiLock(mode, "$lockTag:wifi").also {
                     it.setReferenceCounted(false)
                     it.acquire()
                 }
