@@ -78,7 +78,7 @@ private const val MAMBA_VARS = "{\"ageFrom\":18,\"ageTo\":80,\"gender\":\"F\",\"
 private const val MAMBA_QUERY = "query Rating(\$ageFrom: Int!, \$ageTo: Int!, \$gender: String!, \$heightFrom: Int, \$heightTo: Int, " +
     "\$offsetPhotoId: Int, \$location: String, \$coordinates: GeoPointArg, \$limit: Int!) { photoRating { queue(ageFrom: \$ageFrom, " +
     "ageTo: \$ageTo, gender: \$gender, heightFrom: \$heightFrom, heightTo: \$heightTo, location: \$location, coordinates: \$coordinates, " +
-    "offsetPhotoId: \$offsetPhotoId, limit: \$limit) { photos { photo { photoId } } } } }"
+    "offsetPhotoId: \$offsetPhotoId, limit: \$limit) { photos { photo { photoId: id } } } } }"
 
 // Профиль сервиса: адрес сайта, куки и значения по умолчанию. У каждого сервиса свои настройки и свои файлы.
 private class Svc(
@@ -1525,7 +1525,7 @@ open class MainActivity : Activity() {
             val j = if (svc.id != "rambler" && text.trimStart().startsWith("[")) JSONObject().put("data", JSONArray(text)) else JSONObject(text)
             val arr = if (svc.id == "rambler") (j.optJSONArray("data") ?: j.optJSONArray("user")) else if (svc.id == "mamba") mambaList(j) else findList(j)
             if (arr == null) {
-                handleError("поиск: нет списка анкет: ${text.take(100)}")
+                handleError("поиск: нет списка анкет: ${text.take(if (svc.id == "mamba") 400 else 100)}")
                 return
             }
             var added = 0
