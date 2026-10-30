@@ -74,6 +74,12 @@ private val COOKIE_URLS = listOf(
     "https://rambler.ru/"
 )
 
+private const val MAMBA_VARS = "{\"ageFrom\":18,\"ageTo\":80,\"gender\":\"F\",\"heightFrom\":150,\"heightTo\":220,\"location\":\"3159_4312_4400_0\",\"limit\":15}"
+private const val MAMBA_QUERY = "query Rating(\$ageFrom: Int!, \$ageTo: Int!, \$gender: String!, \$heightFrom: Int, \$heightTo: Int, " +
+    "\$offsetPhotoId: Int, \$location: String, \$coordinates: GeoPointArg, \$limit: Int!) { photoRating { queue(ageFrom: \$ageFrom, " +
+    "ageTo: \$ageTo, gender: \$gender, heightFrom: \$heightFrom, heightTo: \$heightTo, location: \$location, coordinates: \$coordinates, " +
+    "offsetPhotoId: \$offsetPhotoId, limit: \$limit) { photos { photo { photoId } } } } }"
+
 // Профиль сервиса: адрес сайта, куки и значения по умолчанию. У каждого сервиса свои настройки и свои файлы.
 private class Svc(
     val id: String,
@@ -104,7 +110,9 @@ private val SERVICES = listOf(
         "mamba", "Mamba", "https://www.mamba.ru",
         listOf("https://www.mamba.ru", "https://mamba.ru", "https://m.mamba.ru"), "mamba.ru", "liker_mamba", "_mamba",
         listOf("https://www.mamba.ru/", "https://mamba.ru/", "https://m.mamba.ru/"), ".mamba.ru",
-        "", "POST", "", "", "POST", ""
+        // лайк фото в «Рейтинге»; поиск: GraphQL-запрос Rating (тело собирает mambaBody())
+        "/api/ratings/v2/voting/photos/{login}/like?_loc%5Blocale%5D=ru", "POST", "{\"voteSource\":1}",
+        "/api/graphql/?_loc[locale]=ru", "POST", ""
     )
 )
 
@@ -116,8 +124,16 @@ private const val HOOK_JS = """
 (function(){
  if(window.__rec) return; window.__rec=1;
  var send=function(o){try{Rec.push(JSON.stringify(o))}catch(e){}};
+ window.__hdrs=window.__hdrs||{};
+ var put=function(k,v){k=String(k).toLowerCase(); if(k==='content-type'||k==='content-length'||k==='accept'||k==='accept-language')return; window.__hdrs[k]=String(v);
+  if(!window.__hl){window.__hl=1; try{Rec.hdr(k)}catch(e){}}};
+ var cap=function(h){try{ if(!h)return;
+  if(Array.isArray(h)){h.forEach(function(p){put(p[0],p[1])})}
+  else if(typeof h.forEach==='function'){h.forEach(function(v,k){put(k,v)})}
+  else{for(var k in h)put(k,h[k])} }catch(e){}};
  var of=window.fetch;
  if(of){ window.fetch=function(i,init){
+   cap((init&&init.headers)||(i&&i.headers));
    var url=(typeof i==='string')?i:((i&&i.url)||'');
    var m=(init&&init.method)||(i&&i.method)||'GET';
    var b=(init&&init.body)||'';
@@ -131,6 +147,8 @@ private const val HOOK_JS = """
  }; }
  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
  XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;return xo.apply(this,arguments)};
+ var xh=XMLHttpRequest.prototype.setRequestHeader;
+ XMLHttpRequest.prototype.setRequestHeader=function(n,v){put(n,v);return xh.apply(this,arguments)};
  XMLHttpRequest.prototype.send=function(b){
    var x=this;
    this.addEventListener('loadend',function(){
@@ -142,7 +160,7 @@ private const val HOOK_JS = """
 """
 
 // Прямые запросы к API сайта из контекста страницы (с её cookie и заголовками)
-private fun apiJs(): String = """
+private fun apiJs(merge: Boolean): String = "window.__merge=" + merge + ";" + """
 (function(){
  function opts(method,body){
   var o={method:method||'GET',credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}};
@@ -151,15 +169,23 @@ private fun apiJs(): String = """
    o.headers['Content-Type']=(b.charAt(0)==='{'||b.charAt(0)==='[')?'application/json; charset=UTF-8':'application/x-www-form-urlencoded; charset=UTF-8';
    o.body=body;
   }
+  if(window.__merge&&window.__hdrs){ for(var k in window.__hdrs){ if(!(k in o.headers)) o.headers[k]=window.__hdrs[k]; } }
   return o;
+ }
+ function ensure(){
+  var a=window.__merge&&window.__hdrs&&window.__hdrs['authorization'];
+  if(!a||a.indexOf('Bearer eyJ')!==0) return Promise.resolve();
+  try{ var p=JSON.parse(atob(a.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); if(p.exp*1000-Date.now()>120000) return Promise.resolve(); }catch(e){ return Promise.resolve(); }
+  return fetch('/api/auth-jwt/generateToken',{method:'POST',credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}})
+   .then(function(r){return r.json()}).then(function(j){ if(j&&j.token) window.__hdrs['authorization']='Bearer '+j.token; }).catch(function(){});
  }
  window.__lk={
   batch:function(url,method,body){
-   fetch(url,opts(method,body))
+   ensure().then(function(){return fetch(url,opts(method,body))})
     .then(function(r){return r.text()}).then(function(t){Rec.apiBatch(t)}).catch(function(e){Rec.apiErr('batch',String(e))});
   },
   like:function(login,url,method,body){
-   fetch(url,opts(method,body))
+   ensure().then(function(){return fetch(url,opts(method,body))})
     .then(function(r){var st=r.status;return r.text().then(function(t){Rec.apiLike2(login,st,t)})}).catch(function(e){Rec.apiErr('like',String(e))});
   }
  };
@@ -296,7 +322,7 @@ open class MainActivity : Activity() {
     private var hourStart = 0L
     private var hourCount = 0
     private var hourTarget = 0
-    private var offset = 0
+    private var offset = 0L
     private var hasMore = true
     private var likesLeft = -1
     private val queue = ArrayDeque<String>()
@@ -578,10 +604,10 @@ open class MainActivity : Activity() {
                     if (svc.id != "rambler") {
                         addView(TextView(this@MainActivity).apply {
                             textSize = 12f
-                            text = "Как настроить ${svc.title}: 1) вкладка «Браузер», войди в аккаунт. " +
-                                "2) Открой ленту анкет (поиск) и пролистай её. 3) Поставь вручную один лайк. " +
-                                "4) Вернись сюда и нажми «Определить запросы с сайта»: приложение найдёт поиск и лайк " +
-                                "в записанных запросах и заполнит поля выше. 5) Проверь их, поставь лимит 3 и жми «Старт»."
+                            text = "Адреса ${svc.title} уже заданы: лента «Рейтинг» и лайк фото. " +
+                                "1) Вкладка «Браузер»: войди и открой «Рейтинг» (знакомства, оценка фото). " +
+                                "2) Фильтры (пол, возраст, город) задай один раз на самом сайте: приложение берёт их оттуда. " +
+                                "3) Поставь лимит 3 и жми «Старт». Лента листается по id последнего фото, лайк ставится на фото."
                         })
                     }
                     addView(TextView(this@MainActivity).apply {
@@ -754,12 +780,12 @@ open class MainActivity : Activity() {
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                view?.evaluateJavascript(HOOK_JS + apiJs(), null)
+                view?.evaluateJavascript(HOOK_JS + apiJs(svc.id != "rambler"), null)
                 view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
-                view?.evaluateJavascript(HOOK_JS + apiJs(), null)
+                view?.evaluateJavascript(HOOK_JS + apiJs(svc.id != "rambler"), null)
                 view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
                 CookieManager.getInstance().flush()
                 logMsg("Страница загружена: ${(url ?: "").substringBefore('?').take(70)}")
@@ -775,6 +801,13 @@ open class MainActivity : Activity() {
                 val o = JSONObject(s)
                 o.put("t", SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()))
                 // запоминаем фильтры поиска, которые шлёт сам сайт
+                if (svc.id == "mamba" && o.optString("u").contains("/api/graphql") && o.optString("p").contains("\"operationName\":\"Rating\"")) {
+                    // фильтры ленты (возраст, пол, город) берём из настроек самого сайта
+                    val mv = Regex("\"variables\":(\\{[^{}]*\\})").find(o.optString("p"))
+                    if (mv != null && prefs.getString("mvars", "") != mv.groupValues[1]) {
+                        prefs.edit().putString("mvars", mv.groupValues[1]).apply()
+                    }
+                }
                 if (svc.id == "rambler" && o.optString("u").contains("/api/a-search") && o.optString("p").contains("pol=")) {
                     val nb = o.optString("p")
                     if (prefs.getString("sbody", "") != nb) prefs.edit().putString("sbody", nb).apply()
@@ -795,6 +828,11 @@ open class MainActivity : Activity() {
         @JavascriptInterface
         fun apiLike(login: String, text: String) {
             runOnUiThread { onLike(login, text, 200) }
+        }
+
+        @JavascriptInterface
+        fun hdr(name: String) {
+            if (svc.id != "rambler") runOnUiThread { logMsg("🔑 Заголовки сайта перехвачены (первый: $name), будут добавляться к запросам") }
         }
 
         @JavascriptInterface
@@ -1072,8 +1110,12 @@ open class MainActivity : Activity() {
         return o
     }
 
+    private fun mambaList(j: JSONObject): JSONArray? =
+        j.optJSONObject("data")?.optJSONObject("photoRating")?.optJSONObject("queue")?.optJSONArray("photos")
+
     private fun idOf(o: JSONObject): String {
         if (svc.id == "rambler") return o.optString("login")
+        if (svc.id == "mamba") return o.optJSONObject("photo")?.optString("photoId") ?: ""
         val k = prefs.getString("idKey", "") ?: ""
         if (k.isNotEmpty()) {
             val v = pickStr(o, k)
@@ -1481,7 +1523,7 @@ open class MainActivity : Activity() {
         if (!running) return
         try {
             val j = if (svc.id != "rambler" && text.trimStart().startsWith("[")) JSONObject().put("data", JSONArray(text)) else JSONObject(text)
-            val arr = if (svc.id == "rambler") (j.optJSONArray("data") ?: j.optJSONArray("user")) else findList(j)
+            val arr = if (svc.id == "rambler") (j.optJSONArray("data") ?: j.optJSONArray("user")) else if (svc.id == "mamba") mambaList(j) else findList(j)
             if (arr == null) {
                 handleError("поиск: нет списка анкет: ${text.take(100)}")
                 return
@@ -1502,13 +1544,22 @@ open class MainActivity : Activity() {
                 }
                 if (!alreadyLiked(o) && !liked.contains(lg) && seen.add(lg)) {
                     queue.addLast(lg)
-                    profInfo[lg] = profileInfo(o)
+                    profInfo[lg] = if (svc.id == "mamba") Prof("фото $lg", "", "", "", "") else profileInfo(o)
                     added++
                 }
             }
-            offset += arr.length()
+            var progressed = true
+            if (svc.id == "mamba") {
+                // лента листается по id последнего фото, а не по номеру
+                val last = if (arr.length() > 0) idOf(unwrap(arr.optJSONObject(arr.length() - 1) ?: JSONObject())).toLongOrNull() else null
+                progressed = last != null && last != offset
+                if (last != null) offset = last
+            } else {
+                offset += arr.length()
+            }
             hasMore = when {
                 svc.id == "rambler" -> j.optInt("has_more", 0) == 1
+                svc.id == "mamba" -> arr.length() > 0 && progressed
                 j.has("has_more") -> j.optInt("has_more", 0) == 1
                 j.has("hasMore") -> j.optBoolean("hasMore", false)
                 else -> arr.length() > 0
@@ -1533,7 +1584,28 @@ open class MainActivity : Activity() {
         }
     }
 
-    private fun curBody(): String = (prefs.getString("sbody", "") ?: "").ifEmpty { svc.defSbody }
+    private fun curBody(): String {
+        if (svc.id == "mamba") return mambaBody()
+        return (prefs.getString("sbody", "") ?: "").ifEmpty { svc.defSbody }
+    }
+
+    // GraphQL-запрос ленты «Рейтинг». Запрос урезан до id фото (остальные поля сайта нам не нужны),
+    // переменные (возраст, пол, город) берутся из последнего запроса самого сайта. offsetPhotoId = id последнего фото
+    private fun mambaBody(): String {
+        val saved = prefs.getString("mvars", "") ?: ""
+        val src = try {
+            JSONObject(saved.ifEmpty { MAMBA_VARS })
+        } catch (e: Exception) {
+            JSONObject(MAMBA_VARS)
+        }
+        val v = JSONObject()
+        for (k in listOf("ageFrom", "ageTo", "gender", "heightFrom", "heightTo", "location", "coordinates", "limit")) {
+            if (src.has(k)) v.put(k, src.get(k))
+        }
+        v.put("offsetPhotoId", 0)
+        val vars = v.toString().replace("\"offsetPhotoId\":0", "\"offsetPhotoId\":{offset}")
+        return "{\"operationName\":\"Rating\",\"variables\":" + vars + ",\"query\":" + JSONObject.quote(MAMBA_QUERY) + "}"
+    }
 
     // Запоминаем лайкнутую анкету навсегда (файл), чтобы после стопа/перезапуска не запрашивать её снова
     private fun markLiked(login: String) {
@@ -1566,7 +1638,7 @@ open class MainActivity : Activity() {
                         .put("f", p?.from ?: "").put("t", p?.to ?: "").put("c", p?.city ?: "")
                 )
             }
-            prefs.edit().putInt("offset", offset).putString("offBody", curBody()).putString("queue", a.toString()).apply()
+            prefs.edit().putLong("offsetL", offset).putString("offBody", curBody()).putString("queue", a.toString()).apply()
         } catch (e: Exception) {
         }
     }
@@ -1574,7 +1646,7 @@ open class MainActivity : Activity() {
     private fun loadSearch() {
         try {
             if (prefs.getString("offBody", "") != curBody()) return
-            offset = prefs.getInt("offset", 0)
+            offset = prefs.getLong("offsetL", prefs.getInt("offset", 0).toLong())
             val a = JSONArray(prefs.getString("queue", "[]") ?: "[]")
             for (i in 0 until a.length()) {
                 val o = a.optJSONObject(i) ?: continue
@@ -1594,7 +1666,7 @@ open class MainActivity : Activity() {
         queue.clear()
         seen.clear()
         profInfo.clear()
-        prefs.edit().remove("offset").remove("queue").remove("offBody").apply()
+        prefs.edit().remove("offset").remove("offsetL").remove("queue").remove("offBody").apply()
         if (clearLiked) {
             liked.clear()
             try {
@@ -1720,6 +1792,7 @@ open class MainActivity : Activity() {
 
     // «Katerina, 30 лет — ищет от 29 до 40 лет»
     private fun fmtProf(p: Prof): String {
+        if (svc.id == "mamba") return p.name.ifEmpty { "профиль ?" }
         val seek = when {
             p.from.isNotEmpty() && p.to.isNotEmpty() -> "ищет от ${p.from} до ${p.to} лет"
             p.from.isNotEmpty() -> "ищет от ${p.from} лет"
@@ -2093,6 +2166,10 @@ open class MainActivity : Activity() {
             val j = parseLike(text)
             val code = likeCode(j, text, status)
             if (code == 0) {
+                if (svc.id == "mamba") {
+                    val ow = j.optString("photoOwnerId", "")
+                    if (ow.isNotEmpty()) profInfo[login] = Prof("профиль $ow (фото $login)", "", "", "", "")
+                }
                 prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).apply()
                 sessLikes++
                 hourCount++
