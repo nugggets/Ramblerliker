@@ -71,6 +71,16 @@ private const val HOOK_JS = """
    else if(typeof h.forEach==='function'){ h.forEach(function(v,k){out.push(k+': '+v)}); }
    else { for(var k in h) out.push(k+': '+h[k]); }
   }catch(e){} return out.join('\n'); };
+ var bs=function(b){ try{ if(typeof FormData!=='undefined' && b instanceof FormData){ var o=[]; b.forEach(function(v,k){ var t=(typeof v==='string')?v:'[file]'; if(t.length>40) t=t.slice(0,12)+'...[len '+t.length+']'; o.push(k+'='+t); }); return 'FormData: '+o.join('&'); } }catch(e){} return String(b||''); };
+ var wsn=0, OW=window.WebSocket;
+ if(OW){ window.WebSocket=function(u,pr){ var ws=pr?new OW(u,pr):new OW(u);
+   try{ send({m:'WS',u:String(u),s:0,p:'open',h:'',r:''});
+    ws.addEventListener('message',function(e){ if(wsn++>80) return; var d=e.data; send({m:'WS',u:String(u),s:1,p:'in',h:'',r:(typeof d==='string'?d:'[binary]').slice(0,1500)}); });
+    var os=ws.send; ws.send=function(d){ if(wsn++<=80) send({m:'WS',u:String(u),s:2,p:(typeof d==='string'?d:'[binary]').slice(0,1000),h:'',r:''}); return os.apply(ws,arguments); };
+   }catch(e){}
+   return ws; };
+  window.WebSocket.prototype=OW.prototype;
+  ['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k){ window.WebSocket[k]=OW[k]; }); }
  var of=window.fetch;
  window.__origFetch=of;
  if(of){ window.fetch=function(i,init){
@@ -79,7 +89,7 @@ private const val HOOK_JS = """
    var b=(init&&init.body)||'';
    var hh=hs((init&&init.headers)||(i&&i.headers));
    return of.apply(this,arguments).then(function(r){
-     try{ r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:String(b).slice(0,1000),h:hh,r:t.slice(0,4000)}); }); }catch(e){}
+     try{ r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:bs(b).slice(0,1000),h:hh,r:t.slice(0,4000)}); }); }catch(e){}
      return r; });
  }; }
  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
@@ -90,7 +100,7 @@ private const val HOOK_JS = """
    var x=this;
    this.addEventListener('loadend',function(){
      var t=''; try{t=x.responseText||''}catch(e){}
-     send({m:x.__m,u:x.__u,s:x.status,p:String(b||'').slice(0,1000),h:(x.__h||[]).join('\n'),r:t.slice(0,4000)});
+     send({m:x.__m,u:x.__u,s:x.status,p:bs(b).slice(0,1000),h:(x.__h||[]).join('\n'),r:t.slice(0,4000)});
    });
    return xs.apply(this,arguments)};
 })();

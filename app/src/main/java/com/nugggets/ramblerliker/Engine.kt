@@ -1091,7 +1091,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             limitWait = false
             pauseUntil = 0L
             likesLeft = -1
-            logMsg("▶ Сутки после лимита сайта прошли, лимит должен был сброситься. Продолжаю")
+            logMsg("▶ Время сброса лимита сайта наступило. Продолжаю")
         }
         val limit = prefs.getInt("limit", DEFAULT_LIMIT)
         if (prefs.getInt("count", 0) >= limit) {
@@ -1318,7 +1318,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val stub = j.optString("stub", "")
             if (stub.isNotEmpty() && looksLikeLimit(stub)) {
                 logMsg("⚠ Табор вместо анкет показывает сообщение: «$stub»")
-                siteLimitPause("Лайки у сайта закончились")
+                siteLimitPause("Лайки у сайта закончились", stub)
                 return
             }
             if (stub.isNotEmpty()) {
@@ -1493,7 +1493,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 profInfo.remove(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
                 if (j.has("likesleft") && likesLeft <= 0) {
-                    siteLimitPause("Лайки у сайта закончились")
+                    siteLimitPause("Лайки у сайта закончились", text)
                     return
                 }
                 scheduleNext(extraSec = j.optInt("likestimeout", 0))
@@ -1533,7 +1533,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun handleError(msg: String) {
         if (likesLeft == 0 || looksLikeLimit(msg)) {
             logMsg("⚠ $msg")
-            siteLimitPause("Лайки у сайта закончились")
+            siteLimitPause("Лайки у сайта закончились", msg)
             return
         }
         errors++
@@ -1590,16 +1590,67 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return listOf("лимит", "limit", "исчерп", "закончил").any { t.contains(it) }
     }
 
-    // Сайт сказал, что лайки закончились: сообщаем об этом и ждём 24 часа до сброса
-    private fun siteLimitPause(reason: String) {
-        val until = System.currentTimeMillis() + SITE_LIMIT_MS
+    // Ищем в ответе сайта время сброса лимита (поля вида reset_after, resetAt, retry_after, until).
+    // Нулевые и странные даты не берём. Возвращает, через сколько миллисекунд сайт сбросит лимит, или null
+    private fun parseResetMs(raw: String): Long? {
+        val i = raw.indexOf('{')
+        if (i < 0) return null
+        val now = System.currentTimeMillis()
+        var best: Long? = null
+        fun consider(key: String, v: Any?) {
+            val k = key.lowercase(Locale.ROOT)
+            if (!(k.contains("reset") || k.contains("until") || k.contains("retry"))) return
+            var at: Long? = null
+            try {
+                if (v is String) {
+                    val n = v.trim().toDoubleOrNull()
+                    at = if (n != null) numToAt(k, n, now) else java.time.Instant.parse(v.trim()).toEpochMilli()
+                } else if (v is Number) {
+                    at = numToAt(k, v.toDouble(), now)
+                }
+            } catch (e: Exception) {
+            }
+            val d = if (at == null) 0L else at - now
+            if (d in 60000L..259200000L && (best == null || d > best!!)) best = d
+        }
+        fun walk(o: JSONObject, depth: Int) {
+            val it = o.keys()
+            while (it.hasNext()) {
+                val key = it.next()
+                val v = o.opt(key)
+                if (v is JSONObject && depth < 3) walk(v, depth + 1) else consider(key, v)
+            }
+        }
+        try {
+            walk(JSONObject(raw.substring(i)), 0)
+        } catch (e: Exception) {
+        }
+        return best
+    }
+
+    // Число в поле сброса: время в секундах/миллисекундах от 1970 года или «через N секунд»
+    private fun numToAt(key: String, n: Double, now: Long): Long? = when {
+        n > 1.0e12 -> n.toLong()
+        n > 1.0e9 -> (n * 1000).toLong()
+        n > 0 && (key.contains("in") || key.contains("after") || key.contains("retry")) -> now + (n * 1000).toLong()
+        else -> null
+    }
+
+    // Сайт сказал, что лайки закончились: сообщаем и ждём до сброса. Время сброса берём из ответа сайта,
+    // а если сайт его не назвал, ждём 24 часа
+    private fun siteLimitPause(reason: String, raw: String = "") {
+        val fromSite = parseResetMs(raw)
+        val dur = fromSite ?: SITE_LIMIT_MS
+        val until = System.currentTimeMillis() + dur + (if (fromSite != null) 30000L else 0L)
         prefs.edit().putLong("siteLimitUntil", until).apply()
         limitWait = true
-        pauseUntil = SystemClock.elapsedRealtime() + SITE_LIMIT_MS
+        pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
         likesLeft = 0
-        logMsg("⏸ $reason. Своих лайков сегодня поставлено: ${prefs.getInt("count", 0)}. Отсчёт 24 часа до сброса, продолжу около ${siteLimitClock()}")
-        notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через 24 ч (около ${siteLimitClock()}), потом продолжу сам")
+        val src = if (fromSite != null) "Сайт сам назвал время сброса" else "Время сброса сайт не назвал, жду 24 часа"
+        logMsg("⏸ $reason. Своих лайков сегодня поставлено: ${prefs.getInt("count", 0)}. $src, продолжу около ${siteLimitClock()}")
+        if (raw.isNotEmpty()) logMsg("   ответ сайта: ${raw.take(300)}")
+        notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через ${siteLimitLeftText()} (около ${siteLimitClock()}), потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + 600000L
         h.removeCallbacks(tick)
         h.postDelayed(tick, 600000L)
