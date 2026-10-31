@@ -282,7 +282,9 @@ class Svc(
     val defSbody: String,
     val nidOff: Int,
     val activityCls: Class<*>,
-    val keepCls: Class<*>
+    val keepCls: Class<*>,
+    // сколько длится окно лимита лайков у сайта (если сайт сам не назвал время сброса)
+    val limitWindowMs: Long = SITE_LIMIT_MS
 )
 
 val SERVICES = listOf(
@@ -319,7 +321,8 @@ val SERVICES = listOf(
         listOf("https://ok.ru/", "https://www.ok.ru/", "https://m.ok.ru/"), ".ok.ru",
         OK_API + "dating.like", "POST", "user_id={login}&meta={meta}",
         OK_API + "dating.getRecommendedUsers", "POST", "count=20",
-        30, OkActivity::class.java, OkKeepAliveService::class.java
+        30, OkActivity::class.java, OkKeepAliveService::class.java,
+        12L * 3600000L // OK: по диагностике окно 12 часов (сброс = первый лайк окна + 12 ч)
     )
 )
 
@@ -441,13 +444,45 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val mx = siteMax().let { if (it == 0 && siteLimitActive()) prefs.getInt("count", 0) else it }
         val wc = winCount()
         val head = when {
-            siteLimitActive() -> "Лимит сайта исчерпан" + (if (mx > 0) " (давал ~$mx)" else "") + ", сброс через ${siteLimitLeftText()}"
-            likesLeft >= 0 && mx >= likesLeft && mx > 0 -> "Лимит сайта: осталось $likesLeft из ~$mx"
+            siteLimitActive() -> "Лимит сайта: " + (if (mx > 0) "$mx лайков" else "лайки") + " за окно, исчерпан"
+            likesLeft >= 0 && mx >= likesLeft && mx > 0 -> "Лимит сайта: осталось $likesLeft из $mx"
             likesLeft >= 0 -> "Лимит сайта: осталось $likesLeft"
-            mx > 0 -> "Лимит сайта: ~$mx за окно (по факту), поставлено $wc"
+            mx > 0 -> "Лимит сайта: $mx за окно (по факту), поставлено $wc"
             else -> "Лимит сайта: пока не выяснен (поставлено $wc, узнаю по ответам сайта или по первому отказу)"
         }
-        return head
+        return head + "\n" + resetInfo()
+    }
+
+    // Когда у сайта сбросится лимит и когда приложение начнёт ставить лайки снова
+    fun resetInfo(): String {
+        val f = SimpleDateFormat("HH:mm, d MMM", Locale("ru"))
+        f.timeZone = mskTz
+        val winMs = prefs.getLong("siteWinMs", 0L).let { if (it > 0L) it else svc.limitWindowMs }
+        val hrs = winMs / 3600000L
+        if (siteLimitActive()) {
+            val until = prefs.getLong("siteLimitUntil", 0L)
+            val named = prefs.getBoolean("siteResetNamed", false)
+            var t = (if (named) "Сброс: " else "Сброс (примерно): ") + f.format(Date(until)) + " МСК, через " + siteLimitLeftText()
+            val c = Calendar.getInstance(mskTz)
+            c.timeInMillis = until
+            val hh = c.get(Calendar.HOUR_OF_DAY)
+            val from = prefs.getInt("winFrom", DEFAULT_WIN_FROM)
+            val to = prefs.getInt("winTo", DEFAULT_WIN_TO)
+            if (hh < from || hh >= to) {
+                val n = Calendar.getInstance(mskTz)
+                n.timeInMillis = until
+                if (hh >= to) n.add(Calendar.DAY_OF_YEAR, 1)
+                n.set(Calendar.HOUR_OF_DAY, from)
+                n.set(Calendar.MINUTE, 0)
+                t += "\nЛайки начнутся в " + f.format(n.time) + " МСК (окно работы $from–$to)"
+            } else {
+                t += "\nЛайки начнутся сразу после сброса"
+            }
+            return t
+        }
+        val ws = prefs.getLong("winStartAt", 0L)
+        return if (ws > 0L) "Сброс: примерно " + f.format(Date(ws + winMs)) + " МСК (окно $hrs ч от первого лайка в " + f.format(Date(ws)) + ")"
+        else "Окно лимита: $hrs ч, отсчёт пойдёт с первого лайка"
     }
 
     private var leftKeyLogged = false
@@ -560,6 +595,16 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             }
         }
         dayFmt.timeZone = mskTz
+        try {
+            // до 0.45 после отказа ждали 24 часа, хотя у сайта окно короче: пересчитываем сохранённое ожидание один раз
+            val u = prefs.getLong("siteLimitUntil", 0L)
+            val ws = prefs.getLong("winStartAt", 0L)
+            if (prefs.getInt("limitFix", 0) < 45) {
+                if (u > 0L && ws > 0L) prefs.edit().putLong("siteLimitUntil", minOf(u, ws + svc.limitWindowMs + 60000L)).apply()
+                prefs.edit().putInt("limitFix", 45).apply()
+            }
+        } catch (e: Exception) {
+        }
         try {
             if (logFile.exists()) logs.addAll(logFile.readLines().takeLast(LOG_MAX))
         } catch (e: Exception) {
@@ -1840,7 +1885,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             } else if (code == 24) {
                 onAuthLost(login)
             } else {
-                handleError("errno=$code: ${text.take(100)}")
+                handleError("errno=$code: ${text.take(100)}", text)
             }
         } catch (ex: Exception) {
             handleError("ответ лайка не разобран: ${text.take(100)}")
@@ -1875,10 +1920,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         onChange?.invoke()
     }
 
-    private fun handleError(msg: String) {
-        if (likesLeft == 0 || looksLikeLimit(msg)) {
+    private fun handleError(msg: String, raw: String = "") {
+        if (likesLeft == 0 || looksLikeLimit(msg) || looksLikeLimit(raw)) {
             logMsg("⚠ $msg")
-            siteLimitPause("Лайки у сайта закончились", msg)
+            siteLimitPause("Лайки у сайта закончились", if (raw.isNotEmpty()) raw else msg)
             return
         }
         errors++
@@ -1988,18 +2033,26 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         // запоминаем, сколько лайков дал сайт до отказа
         val made = if (winCount() > 0) winCount() else prefs.getInt("count", 0)
         if (made > 0) prefs.edit().putInt("siteMax", made).apply()
-        // сайт время не назвал: окно считаем от первого лайка (+24 ч). Если оно уже прошло, а отказ остался, проверяем каждые 30 мин
-        val winEnd = prefs.getLong("winStartAt", 0L).let { if (it > 0L) it + SITE_LIMIT_MS - System.currentTimeMillis() else 0L }
+        val winStart = prefs.getLong("winStartAt", 0L)
+        // сайт сам назвал сброс: запоминаем, какое у него окно (сброс минус первый лайк окна), дальше пригодится без ответа сайта
+        if (fromSite != null && winStart > 0L) {
+            val w = System.currentTimeMillis() + fromSite - winStart
+            if (w in 3600000L..172800000L) prefs.edit().putLong("siteWinMs", w).apply()
+        }
+        val winMs = prefs.getLong("siteWinMs", 0L).let { if (it > 0L) it else svc.limitWindowMs }
+        // сайт время не назвал: окно считаем от первого лайка. Если оно уже прошло, а отказ остался, проверяем каждые 30 мин
+        val winEnd = if (winStart > 0L) winStart + winMs - System.currentTimeMillis() else 0L
         val dur = fromSite ?: (if (winEnd > 600000L) winEnd else 1800000L)
         val until = System.currentTimeMillis() + dur + (if (fromSite != null) 30000L else 0L)
-        prefs.edit().putLong("siteLimitUntil", until).apply()
+        prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 45).apply()
         limitWait = true
         pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
         likesLeft = 0
-        val src = if (fromSite != null) "Сайт сам назвал время сброса" else if (winEnd > 600000L) "Время сброса сайт не назвал: считаю сутки от первого лайка окна" else "Сутки от первого лайка уже прошли, а сайт всё ещё отказывает: проверяю каждые 30 мин"
+        val wTxt = "${winMs / 3600000L} ч"
+        val src = if (fromSite != null) "Сайт сам назвал время сброса" else if (winEnd > 600000L) "Время сброса сайт не назвал: считаю окно $wTxt от первого лайка окна" else "Окно $wTxt от первого лайка уже прошло, а сайт всё ещё отказывает: проверяю каждые 30 мин"
         logMsg("⏸ $reason. Лайков в окне до отказа: ${winCount()}. $src, продолжу около ${siteLimitClock()}")
-        if (raw.isNotEmpty()) logMsg("   ответ сайта: ${raw.take(300)}")
+        if (raw.isNotEmpty()) logMsg("   ответ сайта: ${raw.take(600)}")
         notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через ${siteLimitLeftText()} (около ${siteLimitClock()}), потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + 600000L
         h.removeCallbacks(tick)

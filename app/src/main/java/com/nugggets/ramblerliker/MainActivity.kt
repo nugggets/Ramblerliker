@@ -172,6 +172,7 @@ open class MainActivity : Activity() {
     private lateinit var stCount: TextView
     private lateinit var stLimit: TextView
     private lateinit var stLeft: TextView
+    private lateinit var stReset: TextView
     private lateinit var stBar: BarView
     private lateinit var stErr: TextView
     private lateinit var tHour: TextView
@@ -385,6 +386,8 @@ open class MainActivity : Activity() {
         stBar = BarView(this)
         stBar.barColor = accent
         st.addView(stBar, lp(MATCH, dp(8), t = 6))
+        stReset = tv("", 13f, accent)
+        st.addView(stReset, lp(MATCH, WRAP, t = 8))
         val t1 = LinearLayout(this)
         tHour = tile(t1, "За час")
         tSess = tile(t1, "За сессию")
@@ -752,6 +755,13 @@ open class MainActivity : Activity() {
         return if (m >= 60) "${m / 60} ч ${m % 60} мин" else "$m мин"
     }
 
+    // Лимит сайта (вверху справа) и время сброса с началом лайков (под полосой)
+    private fun showSiteLimit() {
+        val parts = engine.limitInfo().split("\n", limit = 2)
+        stLeft.setIf(parts[0].removePrefix("Лимит сайта: "))
+        stReset.setIf(if (parts.size > 1) parts[1] else "")
+    }
+
     private fun updateControl() {
         val st = engine.stateCode()
         stTitle.setIf(stateLabel(st))
@@ -762,7 +772,7 @@ open class MainActivity : Activity() {
         stCount.setIf(cnt.toString())
         stLimit.setIf(" / ${engine.limTxt()}")
         stBar.frac = 0f
-        stLeft.setIf(engine.limitInfo())
+        showSiteLimit()
         tHour.setIf(if (engine.running) engine.hourCount.toString() else "-")
         tSess.setIf(engine.sessLikes.toString())
         tQueue.setIf(engine.queue.size.toString())
