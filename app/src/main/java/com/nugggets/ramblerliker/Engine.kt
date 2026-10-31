@@ -90,12 +90,13 @@ fun apiJs(merge: Boolean): String = "window.__merge=" + merge + ";" + """
       while((mm=re.exec(html)))add(mm[1]);
      }
     }
+    var stubEl=document.querySelector('.vote-error-stub');
+    var stub=stubEl?((stubEl.innerText||stubEl.textContent||'').replace(/\s+/g,' ').trim().slice(0,300)||'(без текста)'):'';
     var diag='';
-    if(!ids.length){
-     var first=roots.length?roots[0]:null;
-     diag=(document.title||'')+' | '+location.href+' | блоков: '+roots.length+(first?' | '+first.className+' | '+first.outerHTML.replace(/\s+/g,' ').slice(0,300):'');
+    if(!ids.length&&!stub){
+     diag=(document.title||'')+' | '+location.href+' | блоков: '+roots.length+' | текст: '+((document.body&&document.body.innerText)||'').replace(/\s+/g,' ').trim().slice(0,300);
     }
-    Rec.apiBatch(JSON.stringify({tabor:true,ids:ids,diag:diag}));
+    Rec.apiBatch(JSON.stringify({tabor:true,ids:ids,diag:diag,stub:stub}));
    }catch(e){Rec.apiErr('boot',String(e));}
   },
   batch:function(url,method,body){
@@ -1194,6 +1195,17 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 rowErr = 0
                 logMsg("🔎 Табор: на странице найдено анкет: $added")
                 scheduleNext(quick = true)
+                return
+            }
+            val stub = j.optString("stub", "")
+            if (stub.isNotEmpty()) {
+                // сайт сам показал экран ошибки вместо анкет (нет геопозиции, лимит, анкеты закончились и т.п.)
+                val d = 900000L + rnd.nextInt(600000)
+                logMsg("⚠ Табор вместо анкет показывает сообщение: «$stub». Обновлю страницу и проверю через ${d / 60000} мин")
+                if (!hasLoc()) logMsg("   У приложения нет разрешения на геопозицию: разреши её в настройках приложения (Tabor Liker)")
+                loadSite()
+                nextAt = SystemClock.elapsedRealtime() + d
+                h.postDelayed(tick, d)
                 return
             }
             val diag = j.optString("diag", "")
