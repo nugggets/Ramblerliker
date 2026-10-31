@@ -72,6 +72,18 @@ private const val HOOK_JS = """
    else { for(var k in h) out.push(k+': '+h[k]); }
   }catch(e){} return out.join('\n'); };
  var bs=function(b){ try{ if(typeof FormData!=='undefined' && b instanceof FormData){ var o=[]; b.forEach(function(v,k){ var t=(typeof v==='string')?v:'[file]'; if(t.length>40) t=t.slice(0,12)+'...[len '+t.length+']'; o.push(k+'='+t); }); return 'FormData: '+o.join('&'); } }catch(e){} return String(b||''); };
+ var dsc=function(e){ try{ var out=[], n=e, i=0;
+   while(n&&n.nodeType===1&&i<5){
+    var c=(typeof n.className==='string')?n.className:((n.className&&n.className.baseVal)||'');
+    var t=(n.innerText||n.textContent||'').replace(/\s+/g,' ').trim().slice(0,30);
+    var a=(n.getAttribute&&(n.getAttribute('aria-label')||n.getAttribute('data-testid')||n.getAttribute('title')))||'';
+    out.push(n.tagName.toLowerCase()+(n.id?'#'+n.id:'')+(c?'.'+String(c).trim().split(/\s+/).slice(0,3).join('.'):'')+(a?'['+a+']':'')+(t?' ['+t+']':''));
+    n=n.parentElement; i++; }
+   return out.join(' < '); }catch(x){ return 'err'; } };
+ var ck=0;
+ try{ document.addEventListener('click',function(e){ if(ck++>60) return;
+   var r=(e.target&&e.target.getBoundingClientRect)?e.target.getBoundingClientRect():{left:0,top:0,width:0,height:0};
+   send({m:'CLICK',u:String(location.href).slice(0,90),s:0,p:'CLICK '+dsc(e.target)+' | rect '+Math.round(r.left)+','+Math.round(r.top)+','+Math.round(r.width)+'x'+Math.round(r.height),h:'',r:''}); },true); }catch(e){}
  var wsn=0, OW=window.WebSocket;
  if(OW){ window.WebSocket=function(u,pr){ var ws=pr?new OW(u,pr):new OW(u);
    try{ send({m:'WS',u:String(u),s:0,p:'open',h:'',r:''});
@@ -472,8 +484,8 @@ open class MainActivity : Activity() {
                 lbl(
                     "${sv.title}: адреса пока не заданы, нужна запись запросов. " +
                         "1) Вкладка «Браузер»: войди в ОК и открой знакомства. " +
-                        "2) Пролистай пару анкет и поставь один лайк. " +
-                        "3) Вкладка «Запись»: нажми «Только POST», потом «Копировать» и пришли текст мне. " +
+                        "2) Пролистай пару анкет и один раз нажми кнопку лайка. " +
+                        "3) Вкладка «Запись»: нажми «Все методы», в фильтре впиши click, потом «Копировать» и пришли текст мне. " +
                         "Куки и токены из текста лучше замени на XXX."
                 ), lp(MATCH, WRAP, t = 14)
             )
