@@ -20,6 +20,12 @@ import android.os.PowerManager
  * Если систему закрыла процесс, служба перезапускается сама (START_STICKY) и движок продолжает без окна.
  */
 open class KeepAliveService : Service() {
+    companion object {
+        // Команды из главного окна: у каждого сервиса своя служба в своём процессе
+        const val ACT_START = "com.nugggets.ramblerliker.START"
+        const val ACT_STOP = "com.nugggets.ramblerliker.STOP"
+    }
+
     // Для Mamba служба в своём процессе (см. MambaKeepAliveService): свой движок, свои id уведомлений
     protected open val svcId: String = "rambler"
     private var wl: PowerManager.WakeLock? = null
@@ -40,7 +46,7 @@ open class KeepAliveService : Service() {
             this, 0, Intent(this, engine.svc.activityCls), PendingIntent.FLAG_IMMUTABLE
         )
         val n = Notification.Builder(this, "liker")
-            .setContentTitle("Лайки идут")
+            .setContentTitle("${engine.svc.title}: лайки идут")
             .setContentText("Приложение работает в фоне")
             .setSmallIcon(android.R.drawable.ic_menu_send)
             .setContentIntent(pi)
@@ -57,7 +63,14 @@ open class KeepAliveService : Service() {
         } catch (e: Exception) {
             if (loc != 0) goForeground(n, engine.svc.nidOff + 1, 0) else throw e
         }
+        if (intent?.action == ACT_STOP) {
+            engine.stopLikes("остановлено")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         acquireLocks()
+        if (intent?.action == ACT_START && !engine.running) engine.startLikes()
         // запуск после перезагрузки телефона, после закрытия приложения системой или из окна:
         // движок сам решает, нужно ли работать (по умолчанию да, если не нажимали «Стоп»)
         engine.ensureRunning()

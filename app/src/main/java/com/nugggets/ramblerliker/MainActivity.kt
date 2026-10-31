@@ -51,6 +51,15 @@ import java.util.Locale
 import java.util.Random
 import java.util.TimeZone
 
+import android.text.Editable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.TextWatcher
+import android.text.style.ForegroundColorSpan
+import android.view.Gravity
+import android.widget.FrameLayout
+import android.widget.Switch
+
 private const val HOOK_JS = """
 (function(){
  if(window.__rec) return; window.__rec=1;
@@ -80,7 +89,7 @@ private const val HOOK_JS = """
 private var lastRecreate = 0L
 
 open class MainActivity : Activity() {
-    // Какой сервис ведёт это окно. Окно Mamba (MambaActivity) живёт в своём процессе, поэтому оба сервиса идут одновременно
+    // Какой сервис ведёт это окно: у Mamba и Tabor свои окна в своих процессах, лайки идут одновременно
     protected open fun serviceId(): String = "rambler"
     private lateinit var engine: Engine
     private lateinit var etLikeMethod: EditText
@@ -91,23 +100,46 @@ open class MainActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var prefs: SharedPreferences
     private lateinit var panels: List<View>
+    private lateinit var navIcons: List<TextView>
+    private lateinit var navLabels: List<TextView>
     private lateinit var recText: TextView
     private lateinit var recFilter: EditText
-    private lateinit var status: TextView
     private lateinit var etLimit: EditText
     private lateinit var etRate: EditText
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
     private lateinit var etLikeUrl: EditText
-    private lateinit var tabBtns: List<Button>
     private lateinit var logText: TextView
     private lateinit var logStats: TextView
-    private lateinit var topBar: TextView
-    private lateinit var repStats: TextView
+    private lateinit var segAll: TextView
+    private lateinit var segErr: TextView
+    private lateinit var segToday: TextView
+    private lateinit var segEver: TextView
+    private lateinit var barSub: TextView
+    private lateinit var barChip: TextView
+    private lateinit var stTitle: TextView
+    private lateinit var stVerdict: TextView
+    private lateinit var stCount: TextView
+    private lateinit var stLimit: TextView
+    private lateinit var stLeft: TextView
+    private lateinit var stBar: BarView
+    private lateinit var stErr: TextView
+    private lateinit var tHour: TextView
+    private lateinit var tSess: TextView
+    private lateinit var tQueue: TextView
+    private lateinit var tErr: TextView
+    private lateinit var tNext: TextView
+    private lateinit var tRun: TextView
+    private lateinit var toggleBtn: TextView
+    private lateinit var autoSwitch: Switch
+    private lateinit var repNumToday: TextView
+    private lateinit var repNumHour: TextView
+    private lateinit var repNumSess: TextView
+    private lateinit var repMeta: TextView
+    private lateinit var repHours: HoursView
     private lateinit var repText: TextView
-    private lateinit var autoBtn: Button
+    private var accent = 0
     private var onlyToday = true
-    private var lastTop = ""
     private var logRenderedVer = -1
     private var renderedOnlyErr = false
     private var lastRestored = 0
@@ -115,10 +147,13 @@ open class MainActivity : Activity() {
     private var onlyErr = false
     private var hideNoise = true
     private var onlyPost = false
+    private var webLoaded = false // страница в окне «Браузер» грузится только при первом открытии вкладки
+    private var lastRunningUi: Boolean? = null
+    private var settingAuto = false
+    private var repKey = ""
     private val rec = ArrayList<JSONObject>()
     private val h = Handler(Looper.getMainLooper())
     private val timeF = SimpleDateFormat("HH:mm:ss", Locale.US)
-    private val mskTz: TimeZone = TimeZone.getTimeZone("Europe/Moscow")
     private val verName: String by lazy {
         try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
@@ -133,41 +168,27 @@ open class MainActivity : Activity() {
         ".js", ".css", "/api/cubstat", "/api/client_stat", "/api/seo/", "/api/uni-notice", "/api/features", "/api/banners", "/api/gdpr"
     )
 
-
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun btn(t: String, f: () -> Unit) = Button(this).apply {
-        text = t
-        isAllCaps = false
-        textSize = 12f
-        minWidth = 0
-        minimumWidth = 0
-        setPadding(dp(2), 0, dp(2), 0)
-        setOnClickListener { f() }
-    }
-
-    private fun row(vararg views: View): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        for (v in views) {
-            addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        }
-    }
-
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    private fun lbl(t: String): TextView = tv(t, 12f, Pal.MUTED)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         engine = Engine.get(this, serviceId())
         prefs = engine.prefs
+        accent = svcColor(engine.svc.id)
+        window.statusBarColor = Pal.SURFACE
+        window.navigationBarColor = Pal.SURFACE
         try {
             val nmc = getSystemService(NotificationManager::class.java)
             nmc.cancel(engine.svc.nidOff + 2)
             nmc.cancel(engine.svc.nidOff + 3)
         } catch (e: Exception) {
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val askPerms = ArrayList<String>()
-        if (Build.VERSION.SDK_INT >= 33 && !prefs.getBoolean("notifAsked", false)) {
+        if (Build.VERSION.SDK_INT >= 33 && !prefs.getBoolean("notifAsked", false) &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
             prefs.edit().putBoolean("notifAsked", true).apply()
             askPerms.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -181,279 +202,640 @@ open class MainActivity : Activity() {
 
         setupWeb()
 
-        // --- шапка-заглушка сверху (только показывает статус) ---
-        topBar = TextView(this).apply {
-            textSize = 13f
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            setBackgroundColor(0xFF263238.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
-        }
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(Pal.BG)
+        root.addView(buildAppBar(), lp(MATCH, WRAP))
+        val strip = View(this)
+        strip.setBackgroundColor(accent)
+        root.addView(strip, lp(MATCH, dp(2)))
+        val content = FrameLayout(this)
+        panels = listOf(buildControlTab(), buildLogTab(), buildReportTab(), buildBrowserTab(), buildRecTab())
+        for (p in panels) content.addView(p, FrameLayout.LayoutParams(MATCH, MATCH))
+        root.addView(content, lp(MATCH, 0, 1f))
+        root.addView(buildNav(), lp(MATCH, WRAP))
+        setContentView(root)
+        show(intent.getIntExtra("tab", 0).coerceIn(0, 4))
+        engine.ensureRunning() // по умолчанию лайки идут всегда, если не нажимали «Стоп»
+        askBackgroundOnce()
+    }
 
-        // --- вкладка «Браузер»: страница сверху, кнопки внизу ---
-        val browser = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(
-                row(
-                    btn("◀ Назад") { if (web.canGoBack()) web.goBack() },
-                    btn("⟳ Обновить") { web.reload() },
-                    btn("Домой") { web.loadUrl(engine.svc.site) }
-                )
+    // ---------- сборка экрана ----------
+    private fun buildAppBar(): View {
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.gravity = Gravity.CENTER_VERTICAL
+        bar.setBackgroundColor(Pal.SURFACE)
+        bar.setPadding(dp(6), dp(8), dp(14), dp(8))
+        val back = TextView(this)
+        back.text = "←"
+        back.textSize = 24f
+        back.gravity = Gravity.CENTER
+        back.isClickable = true
+        back.paintBtn(0, Pal.TEXT, 0, 22)
+        back.setOnClickListener { leave() }
+        bar.addView(back, lp(dp(44), dp(44), r = 4))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(engine.svc.title, 18f, Pal.TEXT, true))
+        barSub = tv("", 12f, Pal.MUTED)
+        col.addView(barSub)
+        bar.addView(col, lp(0, WRAP, 1f))
+        barChip = chip("…", Pal.MUTED)
+        bar.addView(barChip)
+        return bar
+    }
+
+    private fun buildNav(): View {
+        val nav = LinearLayout(this)
+        nav.orientation = LinearLayout.HORIZONTAL
+        nav.setBackgroundColor(Pal.SURFACE)
+        val items = listOf("🎛" to "Управление", "📜" to "Журнал", "📊" to "Отчёт", "🌐" to "Браузер", "🧪" to "Запросы")
+        val ic = ArrayList<TextView>()
+        val lb = ArrayList<TextView>()
+        for ((i, item) in items.withIndex()) {
+            val cell = LinearLayout(this)
+            cell.orientation = LinearLayout.VERTICAL
+            cell.gravity = Gravity.CENTER
+            cell.setPadding(0, dp(8), 0, dp(8))
+            cell.isClickable = true
+            cell.setOnClickListener { show(i) }
+            val a = tv(item.first, 18f)
+            a.gravity = Gravity.CENTER
+            val b = tv(item.second, 10f, Pal.MUTED, true)
+            b.gravity = Gravity.CENTER
+            cell.addView(a, lp(WRAP, WRAP))
+            cell.addView(b, lp(WRAP, WRAP))
+            nav.addView(cell, lp(0, WRAP, 1f))
+            ic.add(a)
+            lb.add(b)
+        }
+        navIcons = ic
+        navLabels = lb
+        return nav
+    }
+
+    private fun paintSeg(v: TextView, on: Boolean) {
+        if (on) v.paintBtn(tint(accent, 0x33), accent, accent, 10) else v.paintBtn(Pal.SURFACE2, Pal.MUTED, Pal.STROKE, 10)
+    }
+
+    private fun seg(text: String, on: Boolean, f: () -> Unit): TextView {
+        val v = pill(text, Pal.SURFACE2, Pal.MUTED, Pal.STROKE, 12f, 8, f)
+        paintSeg(v, on)
+        return v
+    }
+
+    private fun tile(parent: LinearLayout, label: String): TextView {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(10), dp(8), dp(10), dp(8))
+        box.background = roundRect(Pal.SURFACE2, dpf(10f))
+        val v = tv("-", 15f, Pal.TEXT, true)
+        box.addView(lbl(label).apply { textSize = 11f })
+        box.addView(v, lp(MATCH, WRAP, t = 2))
+        val first = parent.childCount == 0
+        parent.addView(box, lp(0, WRAP, 1f, l = if (first) 0 else 8))
+        return v
+    }
+
+    private fun bigNum(parent: LinearLayout, label: String): TextView {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        val v = tv("0", 28f, Pal.TEXT, true)
+        box.addView(v)
+        box.addView(lbl(label))
+        parent.addView(box, lp(0, WRAP, 1f))
+        return v
+    }
+
+    // Вкладка «Управление»: статус, главная кнопка, темп и лимит, аккаунт, адреса
+    private fun buildControlTab(): View {
+        val sv = engine.svc
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(12), dp(12), dp(12), dp(24))
+
+        // --- статус и главная кнопка ---
+        val st = card()
+        stTitle = tv("", 22f, Pal.TEXT, true)
+        stVerdict = tv("", 13f, Pal.MUTED)
+        st.addView(stTitle)
+        st.addView(stVerdict, lp(MATCH, WRAP, t = 2))
+        val cr = LinearLayout(this)
+        cr.orientation = LinearLayout.HORIZONTAL
+        cr.gravity = Gravity.BOTTOM
+        stCount = tv("0", 34f, Pal.TEXT, true)
+        stLimit = tv(" / 0", 16f, Pal.MUTED)
+        stLeft = lbl("")
+        cr.addView(stCount)
+        cr.addView(stLimit, lp(WRAP, WRAP, l = 4, b = 6))
+        cr.addView(View(this), lp(0, 0, 1f))
+        cr.addView(stLeft, lp(WRAP, WRAP, b = 6))
+        st.addView(cr, lp(MATCH, WRAP, t = 12))
+        stBar = BarView(this)
+        stBar.barColor = accent
+        st.addView(stBar, lp(MATCH, dp(8), t = 6))
+        val t1 = LinearLayout(this)
+        tHour = tile(t1, "За час")
+        tSess = tile(t1, "За сессию")
+        tQueue = tile(t1, "В очереди")
+        st.addView(t1, lp(MATCH, WRAP, t = 12))
+        val t2 = LinearLayout(this)
+        tErr = tile(t2, "Ошибок")
+        tNext = tile(t2, "Следующее")
+        tRun = tile(t2, "Работает")
+        st.addView(t2, lp(MATCH, WRAP, t = 8))
+        stErr = tv("", 12f, Pal.ERR)
+        stErr.visibility = View.GONE
+        st.addView(stErr, lp(MATCH, WRAP, t = 10))
+        toggleBtn = pill("▶  Запустить", accent, Pal.WHITE, 0, 16f, 14) { onToggleClicked() }
+        st.addView(toggleBtn, lp(MATCH, WRAP, t = 14))
+        col.addView(st, lp(MATCH, WRAP))
+
+        // --- темп и лимит ---
+        val tempo = card()
+        tempo.addView(tv("Темп и лимит", 16f, Pal.TEXT, true))
+        tempo.addView(lbl("Лимит лайков в сутки (максимум $MAX_LIMIT)"), lp(MATCH, WRAP, t = 12))
+        etLimit = inp("60", prefs.getInt("limit", DEFAULT_LIMIT).toString(), true)
+        val lr = LinearLayout(this)
+        lr.gravity = Gravity.CENTER_VERTICAL
+        lr.addView(pill("−10", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { stepLimit(-10) }, lp(dp(56), WRAP, r = 8))
+        lr.addView(etLimit, lp(0, WRAP, 1f))
+        lr.addView(pill("+10", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { stepLimit(10) }, lp(dp(56), WRAP, l = 8))
+        tempo.addView(lr, lp(MATCH, WRAP, t = 6))
+        tempo.addView(lbl("Лайков в минуту, от–до (пауза случайная, поэтому темп плавает)"), lp(MATCH, WRAP, t = 14))
+        etRate = inp("60-80", engine.rateText(), false)
+        tempo.addView(etRate, lp(MATCH, WRAP, t = 6))
+        tempo.addView(lbl("Окно работы по Москве, часы от и до (0 и 24 = круглосуточно)"), lp(MATCH, WRAP, t = 14))
+        etWinFrom = inp("с (час)", prefs.getInt("winFrom", DEFAULT_WIN_FROM).toString(), true)
+        etWinTo = inp("до (час)", prefs.getInt("winTo", DEFAULT_WIN_TO).toString(), true)
+        val wr = LinearLayout(this)
+        wr.gravity = Gravity.CENTER_VERTICAL
+        wr.addView(etWinFrom, lp(0, WRAP, 1f))
+        wr.addView(tv("—", 16f, Pal.MUTED), lp(WRAP, WRAP, l = 10, r = 10))
+        wr.addView(etWinTo, lp(0, WRAP, 1f))
+        tempo.addView(wr, lp(MATCH, WRAP, t = 6))
+        tempo.addView(
+            pill("Сохранить настройки", tint(accent, 0x33), accent, accent) { saveSettings() },
+            lp(MATCH, WRAP, t = 14)
+        )
+        tempo.addView(lbl("Настройки действуют сразу, перезапускать не нужно."), lp(MATCH, WRAP, t = 8))
+        col.addView(tempo, lp(MATCH, WRAP, t = 12))
+
+        // --- аккаунт и фон ---
+        val acc = card()
+        acc.addView(tv("Аккаунт и фон", 16f, Pal.TEXT, true))
+        val sr = LinearLayout(this)
+        sr.gravity = Gravity.CENTER_VERTICAL
+        val sc = LinearLayout(this)
+        sc.orientation = LinearLayout.VERTICAL
+        sc.addView(tv("Автовход", 14f, Pal.TEXT, true))
+        sc.addView(lbl("Сам нажимает «Войти» и «Продолжить», если вход слетел"))
+        sr.addView(sc, lp(0, WRAP, 1f))
+        autoSwitch = Switch(this)
+        sr.addView(autoSwitch, lp(WRAP, WRAP, l = 8))
+        acc.addView(sr, lp(MATCH, WRAP, t = 12))
+        refreshAutoSwitch()
+        autoSwitch.setOnCheckedChangeListener { _, on ->
+            if (!settingAuto) {
+                prefs.edit().putBoolean("autoLogin", on).apply()
+                engine.pushAuto()
+                engine.logMsg(if (on) "Автовход включён: сам нажимаю «Войти» и «Продолжить»" else "Автовход выключен")
+            }
+        }
+        acc.addView(pill("🔋  Фоновая работа: разрешить", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { setupBackground() }, lp(MATCH, WRAP, t = 14))
+        acc.addView(pill("📋  Скопировать сессию для сервера", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { copySession() }, lp(MATCH, WRAP, t = 8))
+        acc.addView(pill("🚪  Выйти из аккаунта", tint(Pal.ERR, 0x22), Pal.ERR) { confirmLogout() }, lp(MATCH, WRAP, t = 8))
+        col.addView(acc, lp(MATCH, WRAP, t = 12))
+
+        // --- адреса и подсказки (свёрнуто) ---
+        val adv = card()
+        val body = LinearLayout(this)
+        body.orientation = LinearLayout.VERTICAL
+        body.visibility = View.GONE
+        val head = tv("Адреса и подсказки  ▾", 16f, Pal.TEXT, true)
+        head.isClickable = true
+        head.setOnClickListener {
+            val open = body.visibility != View.VISIBLE
+            body.visibility = if (open) View.VISIBLE else View.GONE
+            head.text = if (open) "Адреса и подсказки  ▴" else "Адреса и подсказки  ▾"
+        }
+        adv.addView(head)
+        etLikeUrl = inp("URL лайка", prefs.getString("likeUrl", sv.defLikeUrl) ?: sv.defLikeUrl, false)
+        etLikeMethod = inp("GET или POST", prefs.getString("likeMethod", sv.defLikeMethod) ?: sv.defLikeMethod, false)
+        etLikeBody = inp("тело запроса лайка (если есть)", prefs.getString("likeBody", sv.defLikeBody) ?: sv.defLikeBody, false)
+        etSearchUrl = inp("URL поиска", prefs.getString("searchUrl", sv.defSearchUrl) ?: sv.defSearchUrl, false)
+        body.addView(lbl("URL лайка ({login} подставляется сам)"), lp(MATCH, WRAP, t = 12))
+        body.addView(etLikeUrl, lp(MATCH, WRAP, t = 6))
+        body.addView(lbl("Метод лайка"), lp(MATCH, WRAP, t = 12))
+        body.addView(etLikeMethod, lp(MATCH, WRAP, t = 6))
+        body.addView(lbl("Тело запроса лайка ({login} подставляется сам)"), lp(MATCH, WRAP, t = 12))
+        body.addView(etLikeBody, lp(MATCH, WRAP, t = 6))
+        body.addView(lbl("URL поиска ({offset} подставляется сам)"), lp(MATCH, WRAP, t = 12))
+        body.addView(etSearchUrl, lp(MATCH, WRAP, t = 6))
+        body.addView(
+            pill("URL лайка по умолчанию", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { etLikeUrl.setText(sv.defLikeUrl) },
+            lp(MATCH, WRAP, t = 12)
+        )
+        if (sv.id == "mamba") {
+            body.addView(
+                lbl(
+                    "Адреса ${sv.title} уже заданы: лента «Рейтинг» и лайк фото. " +
+                        "1) Вкладка «Браузер»: войди и открой «Рейтинг». " +
+                        "2) Фильтры (пол, возраст, город) задай один раз на самом сайте: приложение берёт их оттуда. " +
+                        "3) Поставь лимит 3 и жми «Запустить». Лента листается по id последнего фото, лайк ставится на фото."
+                ), lp(MATCH, WRAP, t = 14)
             )
         }
+        if (sv.id == "tabor") {
+            body.addView(
+                lbl(
+                    "Адреса ${sv.title} заданы по записи запросов. " +
+                        "1) Вкладка «Браузер»: войди (капчу вводи сам) и открой голосование «Симпатии». " +
+                        "2) Поставь лимит 3 и жми «Запустить». Первые анкеты приложение берёт со страницы, дальше каждая оценка возвращает следующую. " +
+                        "3) Если в журнале «Табор: не нашёл анкеты на странице», пришли эту строку целиком."
+                ), lp(MATCH, WRAP, t = 14)
+            )
+        }
+        body.addView(
+            lbl(
+                "Приложение берёт анкеты из поиска сайта (с твоими фильтрами) и шлёт лайки напрямую. " +
+                    "Лайки ставит фоновая служба: она работает, даже когда окно закрыто, и сама запускается " +
+                    "после перезагрузки телефона и после закрытия приложения системой. Остановить её можно " +
+                    "только кнопкой «Остановить». Лайки идут только в окне работы по Москве. Первый тест: лимит 3."
+            ), lp(MATCH, WRAP, t = 14)
+        )
+        adv.addView(body, lp(MATCH, WRAP))
+        col.addView(adv, lp(MATCH, WRAP, t = 12))
 
-        // --- вкладка «Запросы»: список сверху, фильтр и кнопки внизу ---
-        recFilter = EditText(this).apply {
-            hint = "фильтр: like, search..."
-            inputType = InputType.TYPE_CLASS_TEXT
-            setSingleLine()
+        val scroll = ScrollView(this)
+        scroll.addView(col)
+        return scroll
+    }
+
+    private fun buildLogTab(): View {
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(12), dp(12), dp(12), dp(8))
+        val sc = card()
+        logStats = tv("", 12f, Pal.TEXT)
+        sc.addView(logStats)
+        col.addView(sc, lp(MATCH, WRAP))
+        val r1 = LinearLayout(this)
+        segAll = seg("Все записи", true) {
+            onlyErr = false
+            paintSeg(segAll, true)
+            paintSeg(segErr, false)
+            renderLog()
         }
-        recText = TextView(this).apply {
-            textSize = 11f
-            setTextIsSelectable(true)
+        segErr = seg("Только ошибки", false) {
+            onlyErr = true
+            paintSeg(segAll, false)
+            paintSeg(segErr, true)
+            renderLog()
         }
-        val noiseBtn = btn("Шум: скрыт") {}
+        r1.addView(segAll, lp(0, WRAP, 1f, r = 6))
+        r1.addView(segErr, lp(0, WRAP, 1f))
+        col.addView(r1, lp(MATCH, WRAP, t = 10))
+        val lc = card()
+        lc.setPadding(dp(10), dp(10), dp(10), dp(10))
+        logText = tv("", 11f, Pal.TEXT)
+        logText.typeface = Typeface.MONOSPACE
+        logText.setTextIsSelectable(true)
+        val sv = ScrollView(this)
+        sv.addView(logText)
+        lc.addView(sv, lp(MATCH, MATCH))
+        col.addView(lc, lp(MATCH, 0, 1f, t = 10))
+        val r2 = LinearLayout(this)
+        r2.addView(pill("Копировать", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { copyLog() }, lp(0, WRAP, 1f, r = 6))
+        r2.addView(pill("Поделиться", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { shareLog() }, lp(0, WRAP, 1f, r = 6))
+        r2.addView(pill("Очистить", tint(Pal.ERR, 0x22), Pal.ERR, 0, 12f, 9) { clearLog() }, lp(0, WRAP, 1f))
+        col.addView(r2, lp(MATCH, WRAP, t = 10))
+        return col
+    }
+
+    private fun buildReportTab(): View {
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(12), dp(12), dp(12), dp(24))
+        val sc = card()
+        val nums = LinearLayout(this)
+        repNumToday = bigNum(nums, "Сегодня")
+        repNumHour = bigNum(nums, "За час")
+        repNumSess = bigNum(nums, "За сессию")
+        repNumToday.setTextColor(accent)
+        sc.addView(nums)
+        sc.addView(lbl("По часам сегодня (МСК)"), lp(MATCH, WRAP, t = 14))
+        repHours = HoursView(this)
+        repHours.barColor = accent
+        sc.addView(repHours, lp(MATCH, dp(84), t = 6))
+        repMeta = lbl("")
+        sc.addView(repMeta, lp(MATCH, WRAP, t = 10))
+        col.addView(sc, lp(MATCH, WRAP))
+        val ar = LinearLayout(this)
+        ar.addView(pill("Копировать", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { copyReport() }, lp(0, WRAP, 1f, r = 6))
+        ar.addView(pill("Поделиться", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { shareReport() }, lp(0, WRAP, 1f, r = 6))
+        ar.addView(pill("Очистить", tint(Pal.ERR, 0x22), Pal.ERR, 0, 12f, 9) { clearReport() }, lp(0, WRAP, 1f))
+        col.addView(ar, lp(MATCH, WRAP, t = 12))
+        val sr = LinearLayout(this)
+        segToday = seg("Только сегодня", onlyToday) {
+            onlyToday = true
+            paintSeg(segToday, true)
+            paintSeg(segEver, false)
+            renderReport()
+        }
+        segEver = seg("За всё время", !onlyToday) {
+            onlyToday = false
+            paintSeg(segToday, false)
+            paintSeg(segEver, true)
+            renderReport()
+        }
+        sr.addView(segToday, lp(0, WRAP, 1f, r = 6))
+        sr.addView(segEver, lp(0, WRAP, 1f))
+        col.addView(sr, lp(MATCH, WRAP, t = 12))
+        val lc = card()
+        repText = tv("", 12f, Pal.TEXT)
+        repText.setTextIsSelectable(true)
+        lc.addView(repText)
+        col.addView(lc, lp(MATCH, WRAP, t = 12))
+        if (engine.svc.id == "rambler") {
+            col.addView(
+                pill("🔍  Найти «ищу от–до» на открытой анкете", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 10) { findAgeFields() },
+                lp(MATCH, WRAP, t = 12)
+            )
+        }
+        val scroll = ScrollView(this)
+        scroll.addView(col)
+        return scroll
+    }
+
+    private fun buildBrowserTab(): View {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.addView(web, lp(MATCH, 0, 1f))
+        val tb = LinearLayout(this)
+        tb.setBackgroundColor(Pal.SURFACE)
+        tb.setPadding(dp(6), dp(6), dp(6), dp(6))
+        tb.addView(pill("◀  Назад", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 9) { if (web.canGoBack()) web.goBack() }, lp(0, WRAP, 1f, r = 6))
+        tb.addView(pill("⟳  Обновить", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 9) { web.reload() }, lp(0, WRAP, 1f, r = 6))
+        tb.addView(pill("⌂  Домой", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 9) { web.loadUrl(engine.svc.site) }, lp(0, WRAP, 1f))
+        box.addView(tb, lp(MATCH, WRAP))
+        return box
+    }
+
+    private fun buildRecTab(): View {
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(12), dp(12), dp(12), dp(8))
+        recFilter = inp("фильтр: like, search...", "", false)
+        col.addView(recFilter, lp(MATCH, WRAP))
+        val noiseBtn = pill("Шум: скрыт", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {}
         noiseBtn.setOnClickListener {
             hideNoise = !hideNoise
             noiseBtn.text = if (hideNoise) "Шум: скрыт" else "Шум: виден"
             renderRec()
         }
-        val postBtn = btn("Все методы") {}
+        val postBtn = pill("Все методы", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {}
         postBtn.setOnClickListener {
             onlyPost = !onlyPost
             postBtn.text = if (onlyPost) "Только POST" else "Все методы"
             renderRec()
         }
-        val recPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), 0)
-            addView(ScrollView(this@MainActivity).apply { addView(recText) }, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(recFilter)
-            addView(row(noiseBtn, postBtn))
-            addView(
-                row(
-                    btn("Обновить") { renderRec() },
-                    btn("Копировать") { copyRec() },
-                    btn("Поделиться") { shareRec() },
-                    btn("Очистить") { rec.clear(); renderRec() }
-                )
-            )
-        }
-
-        // --- вкладка «Лайки»: статус и настройки сверху, кнопки внизу ---
-        status = TextView(this).apply { textSize = 15f }
-        etLimit = EditText(this).apply {
-            hint = "лимит лайков в сутки"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setSingleLine()
-            setText(prefs.getInt("limit", DEFAULT_LIMIT).toString())
-        }
-        etRate = EditText(this).apply {
-            hint = "60-80"
-            inputType = InputType.TYPE_CLASS_TEXT
-            setSingleLine()
-            setText(engine.rateText())
-        }
-        etWinFrom = EditText(this).apply {
-            hint = "с (час)"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setSingleLine()
-            setText(prefs.getInt("winFrom", DEFAULT_WIN_FROM).toString())
-        }
-        etWinTo = EditText(this).apply {
-            hint = "до (час)"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setSingleLine()
-            setText(prefs.getInt("winTo", DEFAULT_WIN_TO).toString())
-        }
-        etLikeUrl = EditText(this).apply {
-            hint = "URL лайка"
-            setSingleLine()
-            setText(prefs.getString("likeUrl", engine.svc.defLikeUrl))
-        }
-        etLikeMethod = EditText(this).apply {
-            hint = "GET или POST"
-            setSingleLine()
-            setText(prefs.getString("likeMethod", engine.svc.defLikeMethod))
-        }
-        etLikeBody = EditText(this).apply {
-            hint = "тело запроса лайка (если есть)"
-            setSingleLine()
-            setText(prefs.getString("likeBody", engine.svc.defLikeBody))
-        }
-        etSearchUrl = EditText(this).apply {
-            hint = "URL поиска"
-            setSingleLine()
-            setText(prefs.getString("searchUrl", engine.svc.defSearchUrl))
-        }
-        val likesScroll = ScrollView(this).apply {
-            addView(
-                LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dp(12), dp(12), dp(12), dp(12))
-                    addView(TextView(this@MainActivity).apply { text = "Сервис (у каждого своё окно, оба работают одновременно):" })
-                    addView(
-                        row(
-                            *SERVICES.map { sv ->
-                                btn(sv.title) { switchService(sv.id) }.apply {
-                                    alpha = if (sv.id == engine.svc.id) 1f else 0.5f
-                                    setTypeface(null, if (sv.id == engine.svc.id) Typeface.BOLD else Typeface.NORMAL)
-                                }
-                            }.toTypedArray()
-                        )
-                    )
-                    addView(status)
-                    addView(TextView(this@MainActivity).apply { text = "\nЛимит в сутки (макс. $MAX_LIMIT):" })
-                    addView(etLimit)
-                    addView(TextView(this@MainActivity).apply { text = "Лайков в минуту (от-до; пауза между лайками случайная, поэтому число каждую минуту разное, например 60-80):" })
-                    addView(etRate)
-                    addView(TextView(this@MainActivity).apply { text = "Окно работы по Москве, часы от и до (0 и 24 = круглосуточно):" })
-                    addView(row(etWinFrom, etWinTo))
-                    addView(TextView(this@MainActivity).apply { text = "URL лайка ({login} подставляется сам):" })
-                    addView(etLikeUrl)
-                    addView(TextView(this@MainActivity).apply { text = "Метод лайка:" })
-                    addView(etLikeMethod)
-                    addView(TextView(this@MainActivity).apply { text = "Тело запроса лайка ({login} подставляется сам):" })
-                    addView(etLikeBody)
-                    addView(TextView(this@MainActivity).apply { text = "URL поиска ({offset} подставляется сам):" })
-                    addView(etSearchUrl)
-                    if (engine.svc.id == "mamba") {
-                        addView(TextView(this@MainActivity).apply {
-                            textSize = 12f
-                            text = "Адреса ${engine.svc.title} уже заданы: лента «Рейтинг» и лайк фото. " +
-                                "1) Вкладка «Браузер»: войди и открой «Рейтинг». " +
-                                "2) Фильтры (пол, возраст, город) задай один раз на самом сайте: приложение берёт их оттуда. " +
-                                "3) Поставь лимит 3 и жми «Старт». Лента листается по id последнего фото, лайк ставится на фото."
-                        })
-                    }
-                    if (engine.svc.id == "tabor") {
-                        addView(TextView(this@MainActivity).apply {
-                            textSize = 12f
-                            text = "Адреса ${engine.svc.title} заданы по записи запросов. " +
-                                "1) Вкладка «Браузер»: войди (капчу вводи сам) и открой голосование «Симпатии». " +
-                                "2) Поставь лимит 3 и жми «Старт». Первые анкеты приложение берёт со страницы, дальше каждая оценка возвращает следующую. " +
-                                "3) Если в журнале «Табор: не нашёл анкеты на странице», пришли эту строку целиком."
-                        })
-                    }
-                    addView(TextView(this@MainActivity).apply {
-                        textSize = 12f
-                        text = "\nПриложение берёт анкеты из поиска сайта (с твоими фильтрами) и шлёт лайки напрямую. " +
-                            "Лайки ставит фоновая служба: она работает, даже когда окно закрыто, и сама запускается " +
-                            "после перезагрузки телефона и после закрытия приложения системой. Остановить её можно " +
-                            "только кнопкой «Стоп». Лайки идут только в окне работы по Москве. Первый тест: лимит 3. " +
-                            "Ставятся ли лайки, видно в шапке и на вкладке «Журнал»."
-                    })
-                }
-            )
-        }
-        val likes = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(likesScroll, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(row(btn("▶ Старт") { onStartClicked() }, btn("■ Стоп") { engine.stopLikes("остановлено") }))
-            addView(row(btn("Сохранить") { saveSettings() }, btn("URL по умолчанию") { etLikeUrl.setText(engine.svc.defLikeUrl) }))
-            autoBtn = btn("") {}
-            autoBtn.setOnClickListener {
-                val on = !prefs.getBoolean("autoLogin", engine.svc.id == "rambler")
-                prefs.edit().putBoolean("autoLogin", on).apply()
-                refreshAutoBtn()
-                engine.pushAuto()
-                engine.logMsg(if (on) "Автовход включён: сам нажимаю «Войти» и «Продолжить»" else "Автовход выключен")
+        val r1 = LinearLayout(this)
+        r1.addView(noiseBtn, lp(0, WRAP, 1f, r = 6))
+        r1.addView(postBtn, lp(0, WRAP, 1f))
+        col.addView(r1, lp(MATCH, WRAP, t = 8))
+        val lc = card()
+        lc.setPadding(dp(10), dp(10), dp(10), dp(10))
+        recText = tv("", 11f, Pal.TEXT)
+        recText.typeface = Typeface.MONOSPACE
+        recText.setTextIsSelectable(true)
+        val sv = ScrollView(this)
+        sv.addView(recText)
+        lc.addView(sv, lp(MATCH, MATCH))
+        col.addView(lc, lp(MATCH, 0, 1f, t = 8))
+        val r2 = LinearLayout(this)
+        r2.addView(pill("Обновить", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { renderRec() }, lp(0, WRAP, 1f, r = 6))
+        r2.addView(pill("Копировать", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { copyRec() }, lp(0, WRAP, 1f, r = 6))
+        r2.addView(pill("Поделиться", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { shareRec() }, lp(0, WRAP, 1f, r = 6))
+        r2.addView(pill("Очистить", tint(Pal.ERR, 0x22), Pal.ERR, 0, 12f, 9) {
+            rec.clear()
+            renderRec()
+        }, lp(0, WRAP, 1f))
+        col.addView(r2, lp(MATCH, WRAP, t = 8))
+        recFilter.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                renderRec()
             }
-            refreshAutoBtn()
-            addView(autoBtn)
-            addView(btn("Фоновая работа: разрешить") { setupBackground() })
-            addView(btn("Скопировать сессию для сервера") { copySession() })
-            addView(btn("Выйти из аккаунта (очистить сессию)") { clearSession() })
-        }
-
-        // --- вкладка «Журнал»: записи сверху, кнопки внизу ---
-        logStats = TextView(this).apply {
-            textSize = 13f
-            setPadding(dp(8), dp(8), dp(8), dp(4))
-        }
-        logText = TextView(this).apply {
-            textSize = 11f
-            setPadding(dp(8), 0, dp(8), dp(8))
-            setTextIsSelectable(true)
-        }
-        val errBtn = btn("Все записи") {}
-        errBtn.setOnClickListener {
-            onlyErr = !onlyErr
-            errBtn.text = if (onlyErr) "Только ошибки" else "Все записи"
-            renderLog()
-        }
-        val logPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(logStats)
-            addView(ScrollView(this@MainActivity).apply { addView(logText) }, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(row(errBtn, btn("Очистить") { clearLog() }))
-            addView(row(btn("Копировать") { copyLog() }, btn("Поделиться") { shareLog() }))
-        }
-
-        // --- вкладка «Отчёт»: статистика и список лайкнутых анкет ---
-        repStats = TextView(this).apply {
-            textSize = 13f
-            setPadding(dp(8), dp(8), dp(8), dp(4))
-        }
-        repText = TextView(this).apply {
-            textSize = 12f
-            setPadding(dp(8), 0, dp(8), dp(8))
-            setTextIsSelectable(true)
-        }
-        val todayBtn = btn("Только сегодня") {}
-        todayBtn.setOnClickListener {
-            onlyToday = !onlyToday
-            todayBtn.text = if (onlyToday) "Только сегодня" else "За всё время"
-            renderReport()
-        }
-        val repPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(
-                ScrollView(this@MainActivity).apply {
-                    addView(
-                        LinearLayout(this@MainActivity).apply {
-                            orientation = LinearLayout.VERTICAL
-                            addView(repStats)
-                            addView(repText)
-                        }
-                    )
-                },
-                LinearLayout.LayoutParams(-1, 0, 1f)
-            )
-            addView(row(todayBtn, btn("Очистить") { clearReport() }))
-            addView(row(btn("Копировать") { copyReport() }, btn("Поделиться") { shareReport() }))
-            addView(btn("🔍 Найти «ищу от–до» на открытой анкете") { findAgeFields() })
-        }
-
-        panels = listOf(browser, recPanel, likes, logPanel, repPanel)
-        tabBtns = listOf(
-            btn("Браузер") { show(0) },
-            btn("Запросы") { show(1) },
-            btn("Лайки") { show(2) },
-            btn("Журнал") { show(3) },
-            btn("Отчёт") { show(4) }
-        )
-        val tabs = row(*tabBtns.toTypedArray())
-        // сверху шапка-заглушка, снизу вся панель управления
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(topBar)
-            for (p in panels) addView(p, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(tabs)
-        }
-        setContentView(root)
-        show(0)
-        engine.ensureRunning() // по умолчанию лайки идут всегда, если не нажимали «Стоп»
-        askBackgroundOnce()
+        })
+        return col
     }
 
+    // ---------- управление ----------
+    private fun stepLimit(d: Int) {
+        val cur = etLimit.text.toString().trim().toIntOrNull() ?: prefs.getInt("limit", DEFAULT_LIMIT)
+        etLimit.setText((cur + d).coerceIn(1, MAX_LIMIT).toString())
+    }
+
+    private fun onToggleClicked() {
+        if (engine.running) {
+            engine.stopLikes("остановлено")
+        } else {
+            onStartClicked()
+        }
+        updateControl()
+    }
+
+    private fun confirmLogout() {
+        AlertDialog.Builder(this)
+            .setMessage("Выйти из аккаунта ${engine.svc.title}? Сессия и данные сайта будут удалены, лайки остановятся.")
+            .setPositiveButton("Выйти") { _, _ -> clearSession() }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun clearSession() {
+        engine.clearSession()
+        web.clearCache(true)
+        if (webLoaded) web.loadUrl(engine.svc.site)
+        refreshAutoSwitch()
+        toast("Сессия очищена")
+    }
+
+    private fun refreshAutoSwitch() {
+        settingAuto = true
+        autoSwitch.isChecked = prefs.getBoolean("autoLogin", engine.svc.id == "rambler")
+        settingAuto = false
+    }
+
+    // Выход в главное окно (если это окно открыто из уведомления, главное окно запускаем)
+    private fun leave() {
+        if (isTaskRoot) startActivity(Intent(this, HubActivity::class.java))
+        finish()
+    }
+
+    // ---------- обновление экрана ----------
+    private fun updateTop() {
+        val st = engine.stateCode()
+        barChip.setChip(stateLabel(st), stateColor(st))
+        barSub.setIf("v$verName  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}")
+    }
+
+    private fun runTime(): String {
+        if (!engine.running) return "-"
+        val m = (SystemClock.elapsedRealtime() - engine.sessStart) / 60000
+        return if (m >= 60) "${m / 60} ч ${m % 60} мин" else "$m мин"
+    }
+
+    private fun updateControl() {
+        val st = engine.stateCode()
+        stTitle.setIf(stateLabel(st))
+        stTitle.setTextColor(stateColor(st))
+        stVerdict.setIf(engine.verdict())
+        val cnt = prefs.getInt("count", 0)
+        val lim = prefs.getInt("limit", DEFAULT_LIMIT)
+        stCount.setIf(cnt.toString())
+        stLimit.setIf(" / $lim")
+        stBar.frac = if (lim > 0) cnt.toFloat() / lim else 0f
+        stLeft.setIf(if (engine.likesLeft < 0) "" else "у сайта осталось: ${engine.likesLeft}")
+        tHour.setIf(if (engine.running) engine.hourCount.toString() else "-")
+        tSess.setIf(engine.sessLikes.toString())
+        tQueue.setIf(engine.queue.size.toString())
+        tErr.setIf(engine.errors.toString())
+        tNext.setIf(engine.nextInfo())
+        tRun.setIf(runTime())
+        val le = engine.lastError
+        if (le.isEmpty()) {
+            stErr.visibility = View.GONE
+        } else {
+            stErr.visibility = View.VISIBLE
+            stErr.setIf("Последняя ошибка: $le")
+        }
+        if (lastRunningUi != engine.running) {
+            lastRunningUi = engine.running
+            if (engine.running) {
+                toggleBtn.text = "■  Остановить"
+                toggleBtn.paintBtn(tint(Pal.ERR, 0x33), Pal.ERR, Pal.ERR)
+            } else {
+                toggleBtn.text = "▶  Запустить"
+                toggleBtn.paintBtn(accent, Pal.WHITE)
+            }
+        }
+    }
+
+    // Вызывается движком при любом изменении (и раз в 3 секунды)
+    private fun refresh() {
+        updateTop()
+        when (curTab) {
+            0 -> updateControl()
+            1 -> renderLog()
+            2 -> renderReport()
+        }
+        if (engine.loginRestoredCount != lastRestored) {
+            lastRestored = engine.loginRestoredCount
+            if (webLoaded) web.reload() // служба вошла в аккаунт, обновляем страницу в окне
+        }
+    }
+
+    private fun renderLog() {
+        logStats.setIf(engine.logStatsText())
+        if (logRenderedVer == engine.logVer && renderedOnlyErr == onlyErr) return
+        logRenderedVer = engine.logVer
+        renderedOnlyErr = onlyErr
+        val l = (if (onlyErr) engine.logs.filter { it.contains("⚠") } else engine.logs).takeLast(200).reversed()
+        if (l.isEmpty()) {
+            logText.text = "Журнал пуст."
+            return
+        }
+        val sb = SpannableStringBuilder()
+        for (line in l) {
+            val s0 = sb.length
+            sb.append(line)
+            val e0 = sb.length
+            sb.append('\n')
+            val c = when {
+                line.contains("⚠") -> Pal.ERR
+                line.contains("🔒") || line.contains("⏸") || line.contains("🌙") -> Pal.WARN
+                line.contains("❤") || line.contains("✅") -> Pal.OK
+                else -> 0
+            }
+            if (c != 0) sb.setSpan(ForegroundColorSpan(c), s0, e0, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        logText.text = sb
+    }
+
+    private fun renderReport() {
+        val now = System.currentTimeMillis()
+        val off = 3 * 3600000L // Москва: UTC+3 без перехода на летнее время
+        val dayStart = ((now + off) / 86400000L) * 86400000L - off
+        val hours = IntArray(24)
+        var today = 0
+        var lastHour = 0
+        for (r in engine.reports) {
+            if (r.ts >= dayStart) {
+                today++
+                hours[(((r.ts + off) / 3600000L) % 24).toInt()]++
+            }
+            if (now - r.ts < 3600000L) lastHour++
+        }
+        repNumToday.setIf(today.toString())
+        repNumHour.setIf(lastHour.toString())
+        repNumSess.setIf(engine.sessLikes.toString())
+        repMeta.setIf(
+            "Счётчик приложения: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}  ·  " +
+                "темп ${engine.rateText()} в минуту  ·  ошибок за сессию: ${engine.errors}  ·  всего в отчёте: ${engine.reports.size}"
+        )
+        repHours.data = hours
+        val last = engine.reports.lastOrNull()?.ts ?: 0L
+        val key = "${engine.reports.size}|$last|$onlyToday|$dayStart"
+        if (key == repKey) return
+        repKey = key
+        val tf = SimpleDateFormat("dd.MM HH:mm:ss", Locale.US)
+        val list = (if (onlyToday) engine.reports.filter { it.ts >= dayStart } else engine.reports).takeLast(150).reversed()
+        repText.text = if (list.isEmpty()) "Пока нет лайков." else list.joinToString("\n") { r ->
+            tf.format(Date(r.ts)) + "  " + fmtProf(r.p) + "\n        " + (if (r.p.city.isEmpty()) "" else r.p.city + " · ") + r.login
+        }
+    }
+
+    private fun show(i: Int) {
+        val prev = curTab
+        curTab = i
+        for ((k, p) in panels.withIndex()) p.visibility = if (k == i) View.VISIBLE else View.GONE
+        for (k in navIcons.indices) {
+            val on = k == i
+            navIcons[k].alpha = if (on) 1f else 0.45f
+            navLabels[k].setTextColor(if (on) accent else Pal.MUTED)
+        }
+        if (i == 3) {
+            // экран не гаснет только пока открыт браузер (вход, капча)
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (!webLoaded) {
+                webLoaded = true
+                web.loadUrl(engine.svc.site)
+            }
+            web.onResume()
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (prev == 3 && webLoaded) web.onPause()
+        }
+        updateTop()
+        when (i) {
+            0 -> updateControl()
+            1 -> renderLog()
+            2 -> renderReport()
+            4 -> renderRec()
+        }
+    }
+
+    // ---------- перенесено без изменений: запросы, сессия, настройки, фон, отчёт ----------
     private fun onStartClicked() {
         if (!saveSettings(false)) return
         if (!engine.startLikes()) toast("Уже работает")
         askBackgroundOnce()
     }
 
-    // Один раз просим разрешить работу без ограничений батареи
     private fun askBackgroundOnce() {
         if (!engine.batteryOk() && !prefs.getBoolean("batAsked", false)) {
             prefs.edit().putBoolean("batAsked", true).apply()
@@ -461,7 +843,6 @@ open class MainActivity : Activity() {
         }
     }
 
-    // Автовход в окне «Браузер» работает, только пока служба лайков остановлена (иначе входит сама служба)
     private fun uiAuto(): Boolean = engine.autoFlag() && !engine.running
 
     private fun injectUi(view: WebView?) {
@@ -517,10 +898,8 @@ open class MainActivity : Activity() {
                 CookieManager.getInstance().flush()
             }
         }
-        web.loadUrl(engine.svc.site)
     }
 
-    // Связь страницы вкладки «Браузер» с приложением: запись запросов и автонажатие
     inner class UiBridge {
         @JavascriptInterface
         fun push(s: String) {
@@ -568,7 +947,7 @@ open class MainActivity : Activity() {
         if (permissions.any { it.contains("LOCATION") }) {
             engine.logMsg(if (ok) "📍 Геопозиция разрешена" else "⚠ Геопозиция запрещена: ${engine.svc.title} без неё может не работать. Разреши её в настройках приложения")
             if (ok) {
-                web.reload()
+                if (webLoaded) web.reload()
                 // перезапускаем службу, чтобы она получила тип «геопозиция»
                 if (engine.running) {
                     try {
@@ -578,50 +957,6 @@ open class MainActivity : Activity() {
                 }
             }
         }
-    }
-
-    // Открывает окно другого сервиса: оно живёт в своём процессе, текущее не останавливается
-    private fun switchService(id: String) {
-        if (id == engine.svc.id) return
-        val sv = SERVICES.firstOrNull { it.id == id } ?: return
-        startActivity(Intent(this, sv.activityCls))
-    }
-
-    // ---------- обновление экрана ----------
-    private fun updateTop() {
-        val t = "${engine.svc.title} Liker $verName  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}\n" + engine.verdict()
-        if (t != lastTop) {
-            lastTop = t
-            topBar.text = t
-        }
-    }
-
-    private fun updateStatus() {
-        if (curTab == 2) status.text = engine.statusText()
-        updateTop()
-    }
-
-    // Вызывается движком при любом изменении (и раз в 3 секунды)
-    private fun refresh() {
-        when (curTab) {
-            2 -> status.text = engine.statusText()
-            3 -> renderLog()
-            4 -> renderReport()
-        }
-        if (engine.loginRestoredCount != lastRestored) {
-            lastRestored = engine.loginRestoredCount
-            web.reload() // служба вошла в аккаунт, обновляем страницу в окне
-        }
-        updateTop()
-    }
-
-    private fun renderLog() {
-        logStats.text = engine.logStatsText()
-        if (logRenderedVer == engine.logVer && renderedOnlyErr == onlyErr) return
-        logRenderedVer = engine.logVer
-        renderedOnlyErr = onlyErr
-        val l = (if (onlyErr) engine.logs.filter { it.contains("⚠") } else engine.logs).takeLast(200).reversed()
-        logText.text = if (l.isEmpty()) "Журнал пуст." else l.joinToString("\n")
     }
 
     private fun copyLog() {
@@ -644,15 +979,6 @@ open class MainActivity : Activity() {
         toast("Журнал очищен")
     }
 
-    private fun clearSession() {
-        engine.clearSession()
-        web.clearCache(true)
-        web.loadUrl(engine.svc.site)
-        refreshAutoBtn()
-        toast("Сессия очищена")
-    }
-
-    // Сессия для сервера: cookie + настройки поиска и лайка одним JSON (вставить боту после /cookies)
     private fun copySession() {
         try {
             val m = engine.collectCookies()
@@ -679,21 +1005,6 @@ open class MainActivity : Activity() {
         }
     }
 
-
-    private fun show(i: Int) {
-        curTab = i
-        for ((k, p) in panels.withIndex()) p.visibility = if (k == i) View.VISIBLE else View.GONE
-        for ((k, b) in tabBtns.withIndex()) {
-            b.alpha = if (k == i) 1f else 0.5f
-            b.setTypeface(null, if (k == i) Typeface.BOLD else Typeface.NORMAL)
-        }
-        if (i == 1) renderRec()
-        if (i == 2) updateStatus()
-        if (i == 3) renderLog()
-        if (i == 4) renderReport()
-    }
-
-    // ---------- запросы ----------
     private fun isNoise(o: JSONObject): Boolean {
         val u = o.optString("u")
         if (noiseHosts.any { u.contains(it) }) return true
@@ -751,7 +1062,6 @@ open class MainActivity : Activity() {
         startActivity(Intent.createChooser(i, "Поделиться"))
     }
 
-    // ---------- лайки через API ----------
     private fun saveSettings(notify: Boolean = true): Boolean {
         val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
         val url = etLikeUrl.text.toString().trim().ifEmpty { engine.svc.defLikeUrl }
@@ -784,7 +1094,6 @@ open class MainActivity : Activity() {
         return true
     }
 
-    // Находит на открытой анкете «Я ищу от X до Y лет» и ищет эти числа в записанных ответах сайта
     private fun findAgeFields() {
         web.evaluateJavascript("(function(){return document.body ? document.body.innerText : ''})()") { raw ->
             val text = try {
@@ -840,7 +1149,6 @@ open class MainActivity : Activity() {
         }
     }
 
-    // Батарея без ограничений -> настройки приложения (автозапуск и работа в фоне у производителя телефона)
     private fun setupBackground() {
         if (!engine.batteryOk()) {
             toast("Разреши работу без ограничений батареи")
@@ -858,7 +1166,6 @@ open class MainActivity : Activity() {
         }
     }
 
-    // Разрешение работать в фоне без ограничений батареи; force=true — по кнопке
     private fun askBackground(force: Boolean) {
         if (engine.batteryOk()) {
             if (force) {
@@ -872,37 +1179,6 @@ open class MainActivity : Activity() {
         } catch (e: Exception) {
             openAppSettings()
         }
-    }
-
-    private fun refreshAutoBtn() {
-        autoBtn.text = if (prefs.getBoolean("autoLogin", engine.svc.id == "rambler")) "Автовход: вкл" else "Автовход: выкл"
-    }
-
-    private fun renderReport() {
-        val hourF = SimpleDateFormat("HH", Locale.US)
-        hourF.timeZone = mskTz
-        val tf = SimpleDateFormat("dd.MM HH:mm:ss", Locale.US)
-        val cal = Calendar.getInstance(mskTz)
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        val dayStart = cal.timeInMillis
-        val todayList = engine.reports.filter { it.ts >= dayStart }
-        val now = System.currentTimeMillis()
-        val lastHour = engine.reports.count { now - it.ts < 3600000L }
-        val byHour = todayList.groupBy { hourF.format(Date(it.ts)) }.toSortedMap()
-            .entries.joinToString(", ") { e -> "${e.key}ч: ${e.value.size}" }
-        repStats.text = "Сегодня (с 00:00 МСК) лайкнуто: ${todayList.size} (счётчик приложения ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)})" +
-            "\nЗа последний час: $lastHour (темп ${engine.rateText()} в минуту)" +
-            "\nЗа сессию: ${engine.sessLikes}, ошибок: ${engine.errors}" +
-            "\nВсего в отчёте: ${engine.reports.size}" +
-            "\nПо часам сегодня (МСК): ${if (byHour.isEmpty()) "-" else byHour}"
-        val list = (if (onlyToday) todayList else engine.reports).takeLast(150).reversed()
-        val t = if (list.isEmpty()) "Пока нет лайков." else list.joinToString("\n") { r ->
-            tf.format(Date(r.ts)) + "  " + fmtProf(r.p) + "\n        " + (if (r.p.city.isEmpty()) "" else r.p.city + " · ") + r.login
-        }
-        if (repText.text.toString() != t) repText.text = t
     }
 
     private fun copyReport() {
@@ -931,20 +1207,6 @@ open class MainActivity : Activity() {
             .show()
     }
 
-    // ---------- жизненный цикл ----------
-    override fun onResume() {
-        super.onResume()
-        engine.onChange = { refresh() }
-        refresh()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        engine.onChange = null
-        if (engine.sessionGood) engine.saveCookies()
-        CookieManager.getInstance().flush()
-    }
-
     override fun onDestroy() {
         engine.onChange = null
         try {
@@ -954,8 +1216,30 @@ open class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    // ---------- жизненный цикл ----------
+    override fun onResume() {
+        super.onResume()
+        engine.onChange = { refresh() }
+        refresh()
+        if (curTab == 3 && webLoaded) web.onResume()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        engine.onChange = null
+        if (engine.sessionGood) engine.saveCookies()
+        CookieManager.getInstance().flush()
+        if (webLoaded) web.onPause()
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else super.onBackPressed()
+        if (curTab == 3 && webLoaded && web.canGoBack()) {
+            web.goBack()
+        } else if (curTab != 0) {
+            show(0)
+        } else {
+            leave()
+        }
     }
 }

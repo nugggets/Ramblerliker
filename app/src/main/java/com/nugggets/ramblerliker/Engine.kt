@@ -19,6 +19,8 @@ import android.webkit.GeolocationPermissions
 import android.webkit.WebChromeClient
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -45,6 +47,11 @@ const val DEFAULT_WIN_FROM = 9
 const val DEFAULT_WIN_TO = 23
 const val LOG_MAX = 500
 const val REP_MAX = 3000
+// Счётчики и аналитика: в скрытом окне службы их не грузим (меньше трафика, процессора и батареи)
+val BLOCK_HOSTS = listOf(
+    "mc.yandex.ru", "googletagmanager.com", "google-analytics.com", "doubleclick.net",
+    "kraken.rambler.ru", "cnt.rambler.ru", "top100.rambler.ru", "counter.yadro.ru"
+)
 val COOKIE_URLS = listOf(
     "https://m.dating.rambler.ru/",
     "https://dating.rambler.ru/",
@@ -302,6 +309,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private val logFile = File(app.filesDir, "liker${svc.suffix}.log")
     val reports = ArrayList<Rep>()
     private val repFile = File(app.filesDir, "likes_report${svc.suffix}.tsv")
+    // снимок состояния для главного окна (оно живёт в другом процессе и читает этот файл)
+    private val statusFile = File(app.filesDir, "status${svc.suffix}.json")
+    private var lastStatus = ""
 
     // скрытое окно со страницей сайта
     private var web: WebView? = null
@@ -382,6 +392,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 updateNotif()
             } catch (e: Exception) {
             }
+            writeStatus()
             onChange?.invoke()
             h.postDelayed(this, 3000)
         }
@@ -423,6 +434,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         logMsg("⚙ Служба лайков ${svc.title} запущена (процесс приложения создан)")
         val n = restoreCookies()
         if (n > 0) logMsg("🔑 Восстановлена сохранённая сессия (cookie: $n)")
+        writeStatus(true)
         h.postDelayed(maint, 3000)
     }
 
@@ -476,6 +488,50 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (rowErr > 0) return "⚠ ошибки подряд: $rowErr, ${lastError.take(60)}"
         if (lastLikeAt == 0L) return "… ждём первый лайк"
         return "✅ лайки ставятся, последний ${ago((SystemClock.elapsedRealtime() - lastLikeAt) / 1000)} назад"
+    }
+
+    // Код состояния для цвета и подписи: off, wait, ok, limit, night, auth, err
+    fun stateCode(): String {
+        if (!running) return "off"
+        if (limitWait && pauseUntil > SystemClock.elapsedRealtime()) return "limit"
+        if (nightLogged) return "night"
+        if (autoOn) return "auth"
+        if (rowErr > 0) return "err"
+        if (lastLikeAt == 0L) return "wait"
+        return "ok"
+    }
+
+    // Есть ли сохранённый вход (cookie) или лайк уже проходил в этой сессии
+    fun hasSession(): Boolean = sessionGood || prefs.getString("cookies", null) != null
+
+    // Пишет снимок состояния в файл. Пока служба стоит, файл переписывается только при изменении
+    fun writeStatus(force: Boolean = false) {
+        try {
+            val j = JSONObject()
+            j.put("running", running)
+            j.put("state", stateCode())
+            j.put("verdict", verdict())
+            j.put("count", prefs.getInt("count", 0))
+            j.put("limit", prefs.getInt("limit", DEFAULT_LIMIT))
+            j.put("day", prefs.getString("day", "") ?: "")
+            j.put("sess", sessLikes)
+            j.put("hour", hourCount)
+            j.put("queue", queue.size)
+            j.put("errors", errors)
+            j.put("rate", rateText())
+            j.put("next", nextInfo())
+            j.put("win", "${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)}")
+            j.put("session", hasSession())
+            val body = j.toString()
+            if (!force && !running && body == lastStatus) return
+            lastStatus = body
+            j.put("ts", System.currentTimeMillis())
+            // сначала во временный файл, потом переименование: окно не прочитает наполовину записанный
+            val tmp = File(statusFile.path + ".tmp")
+            tmp.writeText(j.toString())
+            tmp.renameTo(statusFile)
+        } catch (e: Exception) {
+        }
     }
 
     fun nextInfo(): String {
@@ -606,6 +662,14 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     }
                 }
                 return true
+            }
+
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                val host = request?.url?.host ?: return null
+                if (BLOCK_HOSTS.any { host.contains(it) }) {
+                    return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                }
+                return null
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -853,7 +917,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         try {
             val pi = PendingIntent.getActivity(app, 0, Intent(app, svc.activityCls), PendingIntent.FLAG_IMMUTABLE)
             val n = Notification.Builder(app, "liker")
-                .setContentTitle("Лайки идут")
+                .setContentTitle("${svc.title}: лайки идут")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_menu_send)
                 .setContentIntent(pi)
@@ -929,6 +993,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val fresh = web == null
         w()
         h.postDelayed(tick, if (fresh) 5000L else 0L)
+        writeStatus(true)
         onChange?.invoke()
         return true
     }
@@ -958,6 +1023,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (was) {
             logMsg("■ Стоп: ${if (reason == "остановлено") "остановлено вручную" else reason}. Лайков за сессию: $sessLikes")
         }
+        writeStatus(true)
         onChange?.invoke()
     }
 
