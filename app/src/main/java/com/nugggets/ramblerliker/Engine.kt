@@ -431,10 +431,40 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Факт по лимиту сайта: сколько лайков удалось поставить за окно до отказа (запоминается при каждом отказе)
     fun siteMax(): Int = prefs.getInt("siteMax", 0)
     fun winCount(): Int = prefs.getInt("winCount", 0)
+    // Лимит САЙТА (не наш): сколько сайт даёт лайков и сколько осталось, по его же ответам
     fun limitInfo(): String {
         val mx = siteMax()
-        val left = if (likesLeft >= 0) "осталось ${likesLeft}" else "осталось ?"
-        return "лимит сайта: " + (if (mx > 0) "~$mx лайков (по факту)" else "ещё не выяснен") + " · в окне поставлено ${winCount()} · $left"
+        val wc = winCount()
+        val head = when {
+            siteLimitActive() -> "Лимит сайта исчерпан" + (if (mx > 0) " (давал ~$mx)" else "") + ", сброс через ${siteLimitLeftText()}"
+            likesLeft >= 0 && mx >= likesLeft && mx > 0 -> "Лимит сайта: осталось $likesLeft из ~$mx"
+            likesLeft >= 0 -> "Лимит сайта: осталось $likesLeft"
+            mx > 0 -> "Лимит сайта: ~$mx за окно (по факту), поставлено $wc"
+            else -> "Лимит сайта: пока не выяснен (поставлено $wc, узнаю по ответам сайта или по первому отказу)"
+        }
+        return head
+    }
+
+    private var leftKeyLogged = false
+    private val LEFT_KEYS = listOf("likesleft", "likes_left", "remaining", "votes_left", "likes_remaining", "left_likes", "limit_left", "free_likes", "likes_available")
+    private val MAX_KEYS = listOf("likeslimit", "likes_limit", "daily_limit", "limit_total", "total_likes", "max_likes", "likes_total")
+
+    // Ищет в ответе сайта число по одному из имён полей (на глубину до 3), -1 если нет
+    private fun findNum(o: JSONObject, keys: List<String>, depth: Int = 0): Int {
+        val it = o.keys()
+        while (it.hasNext()) {
+            val k = it.next()
+            val v = o.opt(k)
+            if (v is JSONObject) {
+                if (depth < 3) {
+                    val r = findNum(v, keys, depth + 1)
+                    if (r >= 0) return r
+                }
+            } else if (v is Number && keys.contains(k.lowercase(Locale.ROOT))) {
+                return v.toInt()
+            }
+        }
+        return -1
     }
 
     private fun siteLimitClock(): String {
@@ -469,6 +499,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private var okInKind = ""
     private var okInLogin = ""
     private val okMeta = HashMap<String, String>()
+
+    // Трассировка обмена с сайтом (последние запросы и ответы) для кнопки «Скопировать диагностику»
+    val trace = ArrayList<String>()
+    fun tr(line: String) {
+        trace.add(stamp() + "  " + line.take(1800))
+        while (trace.size > 40) trace.removeAt(0)
+    }
 
     private val tick = Runnable { step() }
 
@@ -627,6 +664,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             j.put("count", prefs.getInt("count", 0))
             j.put("limit", prefs.getInt("limit", DEFAULT_LIMIT))
             j.put("left", likesLeft)
+            j.put("site", limitInfo())
             j.put("siteMax", siteMax())
             j.put("winCount", winCount())
             j.put("day", prefs.getString("day", "") ?: "")
@@ -1411,6 +1449,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         c.put("params", params)
         okCmds.clear()
         okCmds.add(c.toString())
+        tr("→ $kind ${c.optString("url")} параметры: $params")
         waiting = true
         likeSentAt = SystemClock.elapsedRealtime()
         h.postDelayed(wd, 20000)
@@ -1455,6 +1494,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun onOkResult(id: Int, status: Int, text: String) {
         if (id != okInId) return
         okInId = 0
+        tr("← $okInKind HTTP $status: ${text.take(1500)}")
         if (okInKind == "batch") {
             h.removeCallbacks(wd)
             waiting = false
@@ -1476,6 +1516,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun onOkErr(id: Int, msg: String) {
         if (id != okInId) return
         okInId = 0
+        tr("← ОШИБКА запроса: $msg")
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
@@ -1659,6 +1700,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 hasMore = j.optInt("has_more", 0) == 1
             }
             rowErr = 0
+            if (ok && j.has("remaining") && j.optInt("remaining", -1) >= 0) likesLeft = j.optInt("remaining", -1)
             if (added > 0) resumedScan = false
             if (added == 0) emptyStreak++ else emptyStreak = 0
             if (seen.size > 30000) seen.clear()
@@ -1707,6 +1749,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun onLike(login: String, text: String, status: Int = 200) {
+        if (svc.id != "ok") tr("← like $login HTTP $status: ${text.take(600)}")
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
@@ -1747,7 +1790,24 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 }
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
-                if (svc.id == "ok" && j.has("remaining")) likesLeft = j.optInt("remaining", -1)
+                var leftFound = j.has("likesleft")
+                if (svc.id != "rambler") {
+                    val lf = findNum(j, LEFT_KEYS)
+                    if (lf >= 0) {
+                        likesLeft = lf
+                        leftFound = true
+                    }
+                }
+                val mxr = findNum(j, MAX_KEYS)
+                if (mxr > 0) {
+                    prefs.edit().putInt("siteMax", mxr).apply()
+                } else if (likesLeft >= 0) {
+                    prefs.edit().putInt("siteMax", winCount() + likesLeft).apply()
+                }
+                if (!leftKeyLogged && sessLikes <= 1) {
+                    leftKeyLogged = true
+                    logMsg(if (leftFound) "📊 Лимит сайта: в ответе есть остаток лайков ($likesLeft)" else "📊 Лимит сайта: в ответе на лайк остатка нет, лимит узнаю по факту (когда сайт откажет)")
+                }
                 val prof = profInfo[login]?.let { fmtProf(it) } ?: "данных анкеты нет"
                 val left = if (likesLeft < 0) "?" else likesLeft.toString()
                 val cnt = prefs.getInt("count", 0)
@@ -1763,11 +1823,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                         aggStart = nowE
                     }
                 }
-                if (sessLikes <= 3) logMsg("   ответ сайта: ${text.take(150)}")
+                if (sessLikes <= 3) logMsg("   ответ сайта: ${text.take(if (svc.id == "ok") 500 else 150)}")
                 addReport(login)
                 profInfo.remove(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
-                if ((j.has("likesleft") || (svc.id == "ok" && j.has("remaining"))) && likesLeft <= 0) {
+                if (leftFound && likesLeft <= 0) {
                     siteLimitPause("Лайки у сайта закончились", text)
                     return
                 }

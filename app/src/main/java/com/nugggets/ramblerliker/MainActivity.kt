@@ -400,6 +400,7 @@ open class MainActivity : Activity() {
         st.addView(stErr, lp(MATCH, WRAP, t = 10))
         toggleBtn = pill("▶  Запустить", accent, Pal.WHITE, 0, 16f, 14) { onToggleClicked() }
         st.addView(toggleBtn, lp(MATCH, WRAP, t = 14))
+        st.addView(pill("📋  Скопировать диагностику (лимит, остаток, запросы)", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { copyDiag() }, lp(MATCH, WRAP, t = 8))
         col.addView(st, lp(MATCH, WRAP))
 
         // --- темп и лимит ---
@@ -1090,6 +1091,34 @@ open class MainActivity : Activity() {
         engine.clearLogs()
         renderLog()
         toast("Журнал очищен")
+    }
+
+    // Всё нужное для разбора одним куском: статус, лимиты, настройки, последние запросы и ответы службы, запись из «Браузера», журнал
+    private fun copyDiag() {
+        try {
+            val sb = StringBuilder()
+            sb.append("=== Диагностика ${engine.svc.title} v$verName ===\n")
+            sb.append(engine.statusText()).append("\n")
+            sb.append("лимит приложения: ${prefs.getInt("limit", DEFAULT_LIMIT)}, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)}, темп ${engine.rateText()}\n")
+            sb.append("адрес лайка: ${prefs.getString("likeUrl", engine.svc.defLikeUrl)} ${prefs.getString("likeBody", engine.svc.defLikeBody)}\n")
+            sb.append("адрес ленты: ${prefs.getString("searchUrl", engine.svc.defSearchUrl)}\n")
+            sb.append("\n=== Запросы службы (последние) ===\n").append(engine.trace.takeLast(25).joinToString("\n")).append("\n")
+            val recs = rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
+            if (engine.svc.id != "ok" || recs.isNotEmpty()) {
+                sb.append("\n=== Запись из «Браузера» ===\n")
+                for (o in recs) {
+                    sb.append(o.optString("t")).append(" ").append(o.optString("m")).append(" ").append(o.optString("u").takeLast(60))
+                        .append(" -> ").append(o.optInt("s")).append("\n  ").append(o.optString("p").take(250)).append("\n  ")
+                        .append(o.optString("r").take(1200)).append("\n")
+                }
+            }
+            sb.append("\n=== Журнал (последние 60) ===\n").append(engine.logs.takeLast(60).joinToString("\n"))
+            val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cb.setPrimaryClip(ClipData.newPlainText("diag", sb.toString()))
+            toast("Диагностика скопирована, вставь её мне в чат")
+        } catch (e: Exception) {
+            toast("Не получилось: ${e.message}")
+        }
     }
 
     private fun copySession() {

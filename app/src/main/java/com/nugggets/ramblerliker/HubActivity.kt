@@ -24,6 +24,7 @@ private class SvcCard(
     val sv: Svc,
     val chip: TextView,
     val verdict: TextView,
+    val site: TextView,
     val count: TextView,
     val rate: TextView,
     val bar: BarView,
@@ -144,6 +145,8 @@ class HubActivity : Activity() {
         verdict.maxLines = 2
         verdict.ellipsize = TextUtils.TruncateAt.END
         c.addView(verdict, lp(MATCH, WRAP, t = 8))
+        val site = tv("", 14f, ac, true)
+        c.addView(site, lp(MATCH, WRAP, t = 8))
         val r2 = LinearLayout(this)
         r2.gravity = Gravity.BOTTOM
         val count = tv("0 / 0", 22f, Pal.TEXT, true)
@@ -166,7 +169,7 @@ class HubActivity : Activity() {
         r3.addView(open, lp(0, WRAP, 1f))
         c.addView(r3, lp(MATCH, WRAP, t = 12))
         c.setOnClickListener { openSvc(sv, 0) }
-        cards[sv.id] = SvcCard(sv, chipV, verdict, count, rate, bar, stats, hint, toggle)
+        cards[sv.id] = SvcCard(sv, chipV, verdict, site, count, rate, bar, stats, hint, toggle)
         return c
     }
 
@@ -195,6 +198,7 @@ class HubActivity : Activity() {
             if (s.exists) s.verdict
             else "Ещё не запускался. Нажми «Открыть», войди в аккаунт на вкладке «Браузер» и запусти."
         )
+        cd.site.setIf(if (s.exists && s.site.isNotEmpty()) s.site else "Лимит сайта: появится после первого запуска")
         cd.count.setIf("$cnt / ${s.limit}")
         cd.rate.setIf("темп ${s.rate} в мин  ·  окно ${s.win} МСК")
         cd.bar.frac = if (s.limit > 0) cnt.toFloat() / s.limit else 0f
