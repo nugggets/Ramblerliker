@@ -75,6 +75,29 @@ fun apiJs(merge: Boolean): String = "window.__merge=" + merge + ";" + """
    .then(function(r){return r.json()}).then(function(j){ if(j&&j.token) window.__hdrs['authorization']='Bearer '+j.token; }).catch(function(){});
  }
  window.__lk={
+  boot:function(){
+   try{
+    var ids=[],seen={};
+    var add=function(v){v=String(v); if(/^\d{5,}$/.test(v)&&!seen[v]){seen[v]=1;ids.push(v);}};
+    var roots=document.querySelectorAll('.sticky-miniature, .card-content, [class*="sympathy"], [class*="vote"]');
+    for(var i=0;i<roots.length;i++){
+     var as=roots[i].querySelectorAll('a[href^="/id"]');
+     for(var j=0;j<as.length;j++){var m=/^\/id(\d+)/.exec(as[j].getAttribute('href')||''); if(m)add(m[1]);}
+    }
+    if(!ids.length){
+     for(var i2=0;i2<roots.length;i2++){
+      var re=/(?:user[_-]?id|data-user[_-]?id|data-id)["'\s:=]+(\d{5,})/g, mm, html=roots[i2].outerHTML;
+      while((mm=re.exec(html)))add(mm[1]);
+     }
+    }
+    var diag='';
+    if(!ids.length){
+     var first=roots.length?roots[0]:null;
+     diag=(document.title||'')+' | '+location.href+' | блоков: '+roots.length+(first?' | '+first.className+' | '+first.outerHTML.replace(/\s+/g,' ').slice(0,300):'');
+    }
+    Rec.apiBatch(JSON.stringify({tabor:true,ids:ids,diag:diag}));
+   }catch(e){Rec.apiErr('boot',String(e));}
+  },
   batch:function(url,method,body){
    ensure().then(function(){return F(url,opts(method,body))})
     .then(function(r){return r.text()}).then(function(t){Rec.apiBatch(t)}).catch(function(e){Rec.apiErr('batch',String(e))});
@@ -201,12 +224,14 @@ val SERVICES = listOf(
         "/api/graphql/?_loc[locale]=ru", "POST", "",
         10, MambaActivity::class.java, MambaKeepAliveService::class.java
     ),
-    // Табор: заготовка. Адреса поиска и лайка пока пустые, их нужно снять с сайта (вкладки «Запросы» и «Журнал»)
+    // Табор: голосование «Симпатии». Первые анкеты берём со страницы, дальше каждая оценка возвращает следующую
     Svc(
         "tabor", "Tabor", "https://m.tabor.ru/sympathy/vote.php",
         listOf("https://m.tabor.ru", "https://tabor.ru", "https://www.tabor.ru"), "tabor.ru", "liker_tabor", "_tabor",
         listOf("https://m.tabor.ru/", "https://tabor.ru/", "https://www.tabor.ru/"), ".tabor.ru",
-        "", "GET", "", "", "GET", "",
+        // оценка возвращает в ответе следующую анкету; в запросе перечисляются остальные уже показанные анкеты
+        "/api/sympathy-vote.php?method=vote", "POST", "user_id={login}&type=like&ad_user={ad}{exclude}",
+        "/sympathy/vote.php", "GET", "",
         20, TaborActivity::class.java, TaborKeepAliveService::class.java
     )
 )
@@ -230,6 +255,7 @@ fun yearsText(a: String): String {
 
 // «Katerina, 30 лет — ищет от 29 до 40 лет»
 fun fmtProf(p: Prof): String {
+    if (p.from == "tabor") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
     if (p.age.isEmpty() && p.from.isEmpty() && p.to.isEmpty() && (p.name.startsWith("фото ") || p.name.startsWith("профиль "))) return p.name
     val seek = when {
         p.from.isNotEmpty() && p.to.isNotEmpty() -> "ищет от ${p.from} до ${p.to} лет"
@@ -292,6 +318,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     var likesLeft = -1
     val queue = ArrayDeque<String>()
     private val seen = HashSet<String>()
+    private val adUsers = HashSet<String>()
     private val profInfo = HashMap<String, Prof>()
     var sessLikes = 0
     var sessStart = 0L
@@ -1052,6 +1079,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun fetchBatch() {
+        if (svc.id == "tabor") {
+            // у Табора списка нет: первые анкеты берём со страницы, дальше их присылает каждая оценка
+            waiting = true
+            h.postDelayed(wd, 20000)
+            w().evaluateJavascript("if(window.__lk&&window.__lk.boot){window.__lk.boot();}else{Rec.apiErr('notready-batch','');}", null)
+            return
+        }
         val body = searchBody()
         val surl = (prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl).replace("{offset}", offset.toString())
         val smeth = prefs.getString("searchMethod", svc.defSearchMethod) ?: svc.defSearchMethod
@@ -1070,7 +1104,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val method = prefs.getString("likeMethod", svc.defLikeMethod) ?: svc.defLikeMethod
         val bodyT = prefs.getString("likeBody", svc.defLikeBody) ?: ""
         val isJson = bodyT.trimStart().let { it.startsWith("{") || it.startsWith("[") }
-        val body = bodyT.replace("{login}", if (isJson) login else enc)
+        var body = bodyT.replace("{login}", if (isJson) login else enc)
+        if (svc.id == "tabor") {
+            // остальные уже показанные анкеты исключаем, как это делает сайт
+            body = body.replace("{ad}", adUsers.contains(login).toString())
+                .replace("{exclude}", queue.joinToString("") { "&exclude_user_ids%5B%5D=" + URLEncoder.encode(it, "UTF-8") })
+        }
         waiting = true
         likeSentAt = SystemClock.elapsedRealtime()
         h.postDelayed(wd, 20000)
@@ -1116,6 +1155,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Итог лайка: 0 успех, 24 вход слетел, остальное ошибка. Rambler: по полю errno, как раньше
     private fun likeCode(j: JSONObject, text: String, status: Int): Int {
         if (svc.id == "rambler") return j.optInt("errno", -1)
+        if (svc.id == "tabor") {
+            if (status == 401 || status == 403) return 24
+            if (status !in 200..299) return status
+            if (text.trimStart().startsWith("<")) return 24 // вместо ответа страница (вход слетел)
+            return if (j.optBoolean("error", false)) -1 else 0
+        }
         if (status == 401 || status == 403) return 24
         if (status !in 200..299) return status
         if (text.trimStart().startsWith("<")) return -1 // вместо ответа пришла HTML-страница (вход, капча)
@@ -1131,11 +1176,51 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return 0
     }
 
+    private fun onTaborBoot(text: String) {
+        try {
+            val j = JSONObject(text)
+            val ids = j.optJSONArray("ids")
+            var added = 0
+            if (ids != null) {
+                for (i in 0 until ids.length()) {
+                    val id = ids.optString(i)
+                    if (id.isNotEmpty() && seen.add(id)) {
+                        queue.addLast(id)
+                        added++
+                    }
+                }
+            }
+            if (added > 0) {
+                rowErr = 0
+                logMsg("🔎 Табор: на странице найдено анкет: $added")
+                scheduleNext(quick = true)
+                return
+            }
+            val diag = j.optString("diag", "")
+            if (diag.isNotEmpty()) {
+                handleError("Табор: не нашёл анкеты на странице: ${diag.take(400)}")
+                return
+            }
+            // анкеты на странице есть, но все уже оценены: обновим страницу позже
+            val d = 1800000L + rnd.nextInt(1800000)
+            logMsg("⏸ Табор: новых анкет нет. Обновлю страницу и проверю снова через ${d / 60000} мин")
+            loadSite()
+            nextAt = SystemClock.elapsedRealtime() + d
+            h.postDelayed(tick, d)
+        } catch (ex: Exception) {
+            handleError("Табор: страница не разобрана: ${text.take(100)}")
+        }
+    }
+
     private fun onBatch(text: String) {
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
         notReady = 0
+        if (svc.id == "tabor") {
+            onTaborBoot(text)
+            return
+        }
         try {
             val mamba = svc.id == "mamba"
             val j = JSONObject(text)
@@ -1223,6 +1308,16 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val j = parseLike(text)
             val code = likeCode(j, text, status)
             if (code == 0) {
+                if (svc.id == "tabor") {
+                    val u = j.optJSONObject("user")
+                    val nid = u?.optString("id") ?: ""
+                    if (u != null && nid.isNotEmpty() && seen.add(nid)) {
+                        queue.addLast(nid)
+                        if (j.optBoolean("ad_user", false)) adUsers.add(nid)
+                        profInfo[nid] = Prof(u.optString("username"), u.optString("age"), "tabor", "", u.optString("city"))
+                    }
+                    adUsers.remove(login)
+                }
                 if (svc.id == "mamba") {
                     val ow = j.optString("photoOwnerId", "")
                     if (ow.isNotEmpty()) profInfo[login] = Prof("профиль $ow (фото $login)", "", "", "", "")
