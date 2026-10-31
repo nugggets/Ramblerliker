@@ -422,6 +422,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // Лимит лайков у сайта (у каждого сайта свой, число мы не знаем: ориентируемся на ответ сайта).
     // Конец ожидания хранится в настройках по настенным часам, чтобы отсчёт переживал перезапуск приложения
+    // Свой лимит приложения: 0 или максимум (2000) значит «без лимита», тогда останавливает только сайт
+    fun appLimitOff(): Boolean = true
+    fun limTxt(): String = if (appLimitOff()) "без лимита" else prefs.getInt("limit", DEFAULT_LIMIT).toString()
+
     fun siteLimitLeftMs(): Long = maxOf(0L, prefs.getLong("siteLimitUntil", 0L) - System.currentTimeMillis())
     fun siteLimitActive(): Boolean = siteLimitLeftMs() > 0L
     fun siteLimitLeftText(): String {
@@ -703,7 +707,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     fun statusText(): String =
         verdict() + "\n" + (if (running) "РАБОТАЕТ" else "остановлен") +
-            "\nлайков сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
+            "\nлайков сегодня: ${prefs.getInt("count", 0)}/${limTxt()}" +
             "\n" + limitInfo() +
             "\nлайков за сессию: $sessLikes" +
             "\nэтот час: ${hourInfo()}" +
@@ -715,7 +719,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     fun logStatsText(): String {
         val mins = if (running) (SystemClock.elapsedRealtime() - sessStart) / 60000 else 0
         return verdict() + "\n" + (if (running) "работает $mins мин" else "остановлен") +
-            "\nлайков за сессию: $sessLikes, сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
+            "\nлайков за сессию: $sessLikes, сегодня: ${prefs.getInt("count", 0)}/${limTxt()}" +
             "\nэтот час: ${hourInfo()}" +
             "\nв очереди: ${queue.size}, ошибок: $errors, следующее действие: ${nextInfo()}"
     }
@@ -1100,7 +1104,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             autoOn -> "захожу в аккаунт"
             else -> "работает"
         }
-        val text = "$state · сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)} · за час $hourCount"
+        val text = "$state · сегодня ${prefs.getInt("count", 0)}/${limTxt()} · за час $hourCount"
         if (text == lastNotif || SystemClock.elapsedRealtime() - lastNotifAt < 15000L) return
         lastNotif = text
         lastNotifAt = SystemClock.elapsedRealtime()
@@ -1175,7 +1179,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             limitWait = true
             pauseUntil = SystemClock.elapsedRealtime() + siteLimitLeftMs()
         }
-        logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, темп ${rateText()} лайков в минуту, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("▶ Старт. Своего лимита нет (останавливает только лимит сайта), темп ${rateText()} лайков в минуту, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         offset = resumeOffset()
         prefs.edit().putBoolean("wantRunning", true).apply()
         try {
@@ -1252,7 +1256,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             logMsg("▶ Время сброса лимита сайта наступило. Продолжаю")
         }
         val limit = prefs.getInt("limit", DEFAULT_LIMIT)
-        if (prefs.getInt("count", 0) >= limit) {
+        if (false && prefs.getInt("count", 0) >= limit) {
             limitPause("Дневной лимит $limit достигнут")
             return
         }
@@ -1812,13 +1816,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 val left = if (likesLeft < 0) "?" else likesLeft.toString()
                 val cnt = prefs.getInt("count", 0)
                 if (maxOf(rateMin(), rateMax()) <= 6f || sessLikes <= 3) {
-                    logMsg("❤ Лайк $cnt/${prefs.getInt("limit", DEFAULT_LIMIT)}: $prof ($login), осталось у сайта: $left")
+                    logMsg("❤ Лайк $cnt/${limTxt()}: $prof ($login), осталось у сайта: $left")
                 } else {
                     aggCount++
                     val nowE = SystemClock.elapsedRealtime()
                     if (aggStart == 0L) aggStart = nowE
                     if (nowE - aggStart >= 60000L) {
-                        logMsg("❤ За минуту лайков: $aggCount. Сегодня $cnt/${prefs.getInt("limit", DEFAULT_LIMIT)}, осталось у сайта: $left. Последний: $prof ($login)")
+                        logMsg("❤ За минуту лайков: $aggCount. Сегодня $cnt/${limTxt()}, осталось у сайта: $left. Последний: $prof ($login)")
                         aggCount = 0
                         aggStart = nowE
                     }

@@ -405,10 +405,11 @@ open class MainActivity : Activity() {
 
         // --- темп и лимит ---
         val tempo = card()
-        tempo.addView(tv("Темп и лимит", 16f, Pal.TEXT, true))
-        tempo.addView(lbl("Лимит лайков в сутки (максимум $MAX_LIMIT)"), lp(MATCH, WRAP, t = 12))
-        etLimit = inp("60", prefs.getInt("limit", DEFAULT_LIMIT).toString(), true)
+        tempo.addView(tv("Темп", 16f, Pal.TEXT, true))
+        // своего лимита нет: останавливает только лимит сайта. Поле оставлено скрытым, чтобы не ломать сохранение
+        etLimit = inp("0", "0", true)
         val lr = LinearLayout(this)
+        lr.visibility = View.GONE
         lr.gravity = Gravity.CENTER_VERTICAL
         lr.addView(pill("−10", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { stepLimit(-10) }, lp(dp(56), WRAP, r = 8))
         lr.addView(etLimit, lp(0, WRAP, 1f))
@@ -698,7 +699,7 @@ open class MainActivity : Activity() {
     // ---------- управление ----------
     private fun stepLimit(d: Int) {
         val cur = etLimit.text.toString().trim().toIntOrNull() ?: prefs.getInt("limit", DEFAULT_LIMIT)
-        etLimit.setText((cur + d).coerceIn(1, MAX_LIMIT).toString())
+        etLimit.setText((cur + d).coerceIn(0, MAX_LIMIT).toString())
     }
 
     private fun onToggleClicked() {
@@ -742,7 +743,7 @@ open class MainActivity : Activity() {
     private fun updateTop() {
         val st = engine.stateCode()
         barChip.setChip(stateLabel(st), stateColor(st))
-        barSub.setIf("v$verName  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}")
+        barSub.setIf("v$verName  ·  сегодня ${prefs.getInt("count", 0)}/${engine.limTxt()}")
     }
 
     private fun runTime(): String {
@@ -759,8 +760,8 @@ open class MainActivity : Activity() {
         val cnt = prefs.getInt("count", 0)
         val lim = prefs.getInt("limit", DEFAULT_LIMIT)
         stCount.setIf(cnt.toString())
-        stLimit.setIf(" / $lim")
-        stBar.frac = if (lim > 0) cnt.toFloat() / lim else 0f
+        stLimit.setIf(" / ${engine.limTxt()}")
+        stBar.frac = 0f
         stLeft.setIf(engine.limitInfo())
         tHour.setIf(if (engine.running) engine.hourCount.toString() else "-")
         tSess.setIf(engine.sessLikes.toString())
@@ -846,7 +847,7 @@ open class MainActivity : Activity() {
         repNumHour.setIf(lastHour.toString())
         repNumSess.setIf(engine.sessLikes.toString())
         repMeta.setIf(
-            "Счётчик приложения: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}  ·  " +
+            "Счётчик приложения: ${prefs.getInt("count", 0)}/${engine.limTxt()}  ·  " +
                 "темп ${engine.rateText()} в минуту  ·  ошибок за сессию: ${engine.errors}  ·  всего в отчёте: ${engine.reports.size}"
         )
         repHours.data = hours
@@ -1212,7 +1213,7 @@ open class MainActivity : Activity() {
     }
 
     private fun saveSettings(notify: Boolean = true): Boolean {
-        val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
+        val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(0, MAX_LIMIT)
         val url = etLikeUrl.text.toString().trim().ifEmpty { engine.svc.defLikeUrl }
         val lm = etLikeMethod.text.toString().trim().uppercase().let { if (it == "GET" || it == "POST" || it == "PUT") it else engine.svc.defLikeMethod }
         val lb = etLikeBody.text.toString().trim()

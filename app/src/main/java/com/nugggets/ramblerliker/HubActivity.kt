@@ -199,9 +199,9 @@ class HubActivity : Activity() {
             else "Ещё не запускался. Нажми «Открыть», войди в аккаунт на вкладке «Браузер» и запусти."
         )
         cd.site.setIf(if (s.exists && s.site.isNotEmpty()) s.site else "Лимит сайта: появится после первого запуска")
-        cd.count.setIf("$cnt / ${s.limit}")
+        cd.count.setIf(if (s.limit <= 0 || s.limit >= MAX_LIMIT) "$cnt" else "$cnt / ${s.limit}")
         cd.rate.setIf("темп ${s.rate} в мин  ·  окно ${s.win} МСК")
-        cd.bar.frac = if (s.limit > 0) cnt.toFloat() / s.limit else 0f
+        cd.bar.frac = if (s.limit > 0 && s.limit < MAX_LIMIT) cnt.toFloat() / s.limit else 0f
         cd.stats.setIf("за час ${s.hour}  ·  за сессию ${s.sess}  ·  в очереди ${s.queue}  ·  ошибок ${s.errors}")
         val needLogin = s.exists && !s.running && !s.hasSession
         if (needLogin) {
