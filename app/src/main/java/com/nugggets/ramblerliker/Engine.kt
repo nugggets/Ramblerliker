@@ -24,6 +24,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -188,6 +190,72 @@ const val AUTO_JS = """
 })();
 """
 
+const val OK_API = "https://okdating-app.ru/api/"
+
+// OK: скрипт для КАЖДОГО окна страницы (мини-приложение живёт во вложенном окне другого домена).
+// Он подсматривает, с какими общими параметрами (_token, _session, _device_info ...) приложение
+// ходит на okdating-app.ru, и выполняет наши запросы от имени этого же окна: с тем же токеном и тем же адресом страницы
+const val OK_JS = """
+(function(){
+ if(window.__okj) return; window.__okj=1;
+ if(typeof Rec==='undefined'||!Rec.okPoll) return;
+ var H=''; try{H=String(location.hostname)}catch(e){}
+ var API='okdating-app.ru/api/';
+ var st={common:null,last:{},ready:false};
+ var OF=window.fetch;
+ var rawFetch=function(){return OF.apply(window,arguments)};
+ function pairs(body,cb){
+  try{
+   if(!body) return false;
+   if(typeof body==='string'){ body=new URLSearchParams(body); }
+   if((typeof FormData!=='undefined'&&body instanceof FormData)||(typeof URLSearchParams!=='undefined'&&body instanceof URLSearchParams)){ body.forEach(function(v,k){cb(k,v)}); return true; }
+  }catch(e){}
+  return false;
+ }
+ function grab(url,body){
+  try{
+   url=String(url); var i=url.indexOf(API); if(i<0) return;
+   var m=url.substring(i+API.length).split('?')[0];
+   var com={}, own={}, any=false;
+   pairs(body,function(k,v){ if(typeof v!=='string') return; any=true; if(k.charAt(0)==='_') com[k]=v; else own[k]=v; });
+   if(!any||!com._token) return;
+   st.common=com;
+   if(m) st.last[m]=own;
+   if(!st.ready){ st.ready=true; setTimeout(function(){ try{Rec.okReady(H)}catch(e){} },3000); }
+  }catch(e){}
+ }
+ if(OF){ window.fetch=function(i,init){ try{ grab((typeof i==='string')?i:((i&&i.url)||''),(init&&init.body)||null); }catch(e){} return OF.apply(this,arguments); }; }
+ try{
+  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,u){ this.__ou=u; return xo.apply(this,arguments); };
+  XMLHttpRequest.prototype.send=function(b){ try{ grab(this.__ou,b); }catch(e){} return xs.apply(this,arguments); };
+ }catch(e){}
+ var busy=false;
+ function run(c){
+  busy=true;
+  try{
+   var fd=new FormData(), p=c.params||{}, com=st.common||{};
+   var u=String(c.url), i=u.indexOf(API), m=i<0?'':u.substring(i+API.length).split('?')[0];
+   var base=st.last[m]||{};
+   for(var k in base){ if(!(k in p)&&k!=='user_id'&&k!=='meta') fd.append(k,base[k]); }
+   for(var k2 in p) fd.append(k2,p[k2]);
+   for(var k3 in com) fd.append(k3,com[k3]);
+   rawFetch(u,{method:'POST',body:fd}).then(function(r){
+    var s=r.status;
+    return r.text().then(function(t){ Rec.okResult(c.id,s,t); });
+   }).catch(function(e){ try{Rec.okErr(c.id,String(e))}catch(x){} }).then(function(){ busy=false; });
+  }catch(e){ busy=false; try{Rec.okErr(c.id,String(e))}catch(x){} }
+ }
+ setInterval(function(){
+  if(busy||!st.ready) return;
+  var s=''; try{ s=Rec.okPoll(); }catch(e){ return; }
+  if(!s) return;
+  var c; try{ c=JSON.parse(s); }catch(e){ return; }
+  run(c);
+ },400);
+})();
+"""
+
 const val MAMBA_VARS = "{\"ageFrom\":18,\"ageTo\":80,\"gender\":\"F\",\"heightFrom\":150,\"heightTo\":220,\"location\":\"3159_4312_4400_0\",\"limit\":15}"
 // Запрос ленты «Рейтинг» урезан до id фото: остальные поля сайта нам не нужны
 const val MAMBA_QUERY = "query Rating(\$ageFrom: Int!, \$ageTo: Int!, \$gender: String!, \$heightFrom: Int, \$heightTo: Int, " +
@@ -243,13 +311,14 @@ val SERVICES = listOf(
         "/sympathy/vote.php", "GET", "",
         20, TaborActivity::class.java, TaborKeepAliveService::class.java
     ),
-    // OK: «ОК Знакомства» это мини-приложение внутри ok.ru. Адреса лайка и ленты пока неизвестны:
-    // сначала записываем запросы на вкладке «Запись», потом задаём их на вкладке «Лайки»
+    // OK: «ОК Знакомства» это мини-приложение внутри ok.ru (окно другого домена). Лента: dating.getRecommendedUsers,
+    // лайк: dating.like (user_id + meta из ленты). Токен и прочие параметры берутся у самого приложения (см. OK_JS)
     Svc(
         "ok", "OK", "https://ok.ru/app/dating",
         listOf("https://ok.ru", "https://www.ok.ru", "https://m.ok.ru"), "ok.ru", "liker_ok", "_ok",
         listOf("https://ok.ru/", "https://www.ok.ru/", "https://m.ok.ru/"), ".ok.ru",
-        "", "POST", "", "", "GET", "",
+        OK_API + "dating.like", "POST", "user_id={login}&meta={meta}",
+        OK_API + "dating.getRecommendedUsers", "POST", "count=20",
         30, OkActivity::class.java, OkKeepAliveService::class.java
     )
 )
@@ -273,7 +342,7 @@ fun yearsText(a: String): String {
 
 // «Katerina, 30 лет — ищет от 29 до 40 лет»
 fun fmtProf(p: Prof): String {
-    if (p.from == "tabor") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
+    if (p.from == "tabor" || p.from == "ok") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
     if (p.age.isEmpty() && p.from.isEmpty() && p.to.isEmpty() && (p.name.startsWith("фото ") || p.name.startsWith("профиль "))) return p.name
     val seek = when {
         p.from.isNotEmpty() && p.to.isNotEmpty() -> "ищет от ${p.from} до ${p.to} лет"
@@ -382,6 +451,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     var lastCookieSave = 0L
     var cookieSaveLogged = false
     var loginRestoredCount = 0
+
+    // OK: очередь команд для окна мини-приложения и состояние обмена с ним
+    private val okCmds = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    @Volatile private var okReadyFlag = false
+    private var okSeq = 0
+    private var okInId = 0
+    private var okInKind = ""
+    private var okInLogin = ""
+    private val okMeta = HashMap<String, String>()
 
     private val tick = Runnable { step() }
 
@@ -635,6 +713,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun loadSite() {
+        okReadyFlag = false
+        okCmds.clear()
+        okInId = 0
         pageReady = false
         loadStartedAt = SystemClock.elapsedRealtime()
         w().loadUrl(svc.site)
@@ -667,6 +748,18 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         cm.setAcceptCookie(true)
         cm.setAcceptThirdPartyCookies(v, true)
         v.addJavascriptInterface(Bridge(), "Rec")
+        // OK: мини-приложение во вложенном окне, поэтому наш скрипт ставим во все окна страницы
+        if (svc.id == "ok") {
+            try {
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    WebViewCompat.addDocumentStartJavaScript(v, OK_JS, setOf("*"))
+                } else {
+                    logMsg("⚠ OK: эта версия WebView не умеет работать во вложенных окнах. Обнови «Android System WebView» в Google Play")
+                }
+            } catch (e: Exception) {
+                logMsg("⚠ OK: не удалось включить работу во вложенных окнах: ${e.message}")
+            }
+        }
         // геопозицию отдаём только сайту сервиса и только если приложению её разрешили
         v.webChromeClient = object : WebChromeClient() {
             override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
@@ -731,6 +824,25 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         @JavascriptInterface
         fun apiLike2(login: String, status: Int, text: String) {
             h.post { onLike(login, text, status) }
+        }
+
+        // OK: окно мини-приложения забирает команду (вызывается не из главного потока)
+        @JavascriptInterface
+        fun okPoll(): String = okCmds.poll() ?: ""
+
+        @JavascriptInterface
+        fun okReady(host: String) {
+            h.post { onOkReady(host) }
+        }
+
+        @JavascriptInterface
+        fun okResult(id: Int, status: Int, text: String) {
+            h.post { onOkResult(id, status, text) }
+        }
+
+        @JavascriptInterface
+        fun okErr(id: Int, msg: String) {
+            h.post { onOkErr(id, msg) }
         }
 
         @JavascriptInterface
@@ -985,10 +1097,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     fun startLikes(): Boolean {
         if (running) return false
-        if (svc.id == "ok" && (prefs.getString("likeUrl", svc.defLikeUrl) ?: "").isBlank()) {
-            logMsg("ℹ OK: адрес лайка ещё не задан. Вкладка «Браузер»: войди и открой знакомства, поставь один лайк. Вкладка «Запись»: нажми «Копировать» и пришли мне текст, я пропишу адреса")
-            return false
-        }
         running = true
         waiting = false
         errors = 0
@@ -1142,6 +1250,22 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             h.postDelayed(tick, 6000)
             return
         }
+        if (svc.id == "ok" && !okReadyFlag) {
+            // мини-приложение ещё грузится и не показало свой токен
+            notReady++
+            if (notReady == 1) logMsg("… OK: жду, пока загрузится мини-приложение знакомств и выдаст токен")
+            if (notReady > 45) {
+                notReady = 0
+                val u = page.url ?: ""
+                logMsg("⚠ OK: мини-приложение не загрузилось за 90 с (страница: ${u.take(80)}). " +
+                    (if (u.contains("login", true) || u.contains("st.cmd=anonym", true)) "Похоже, нет входа в ОК: войди во вкладке «Браузер». " else "") +
+                    "Перезагружаю страницу")
+                loadSite()
+            }
+            nextAt = SystemClock.elapsedRealtime() + 2000
+            h.postDelayed(tick, 2000)
+            return
+        }
         hourOk()
         if (queue.isEmpty()) {
             fetchBatch()
@@ -1161,6 +1285,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     private fun searchBody(): String {
         if (svc.id == "mamba") return mambaBody()
+        if (svc.id == "ok") return okVal("sbody", svc.defSbody)
         return (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY }
     }
 
@@ -1205,6 +1330,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             w().evaluateJavascript("if(window.__lk&&window.__lk.boot){window.__lk.boot();}else{Rec.apiErr('notready-batch','');}", null)
             return
         }
+        if (svc.id == "ok") {
+            okSend("batch", okVal("searchUrl", svc.defSearchUrl), okParams(searchBody(), "", "", offset), "")
+            return
+        }
         val body = searchBody()
         val surl = (prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl).replace("{offset}", offset.toString())
         val smeth = prefs.getString("searchMethod", svc.defSearchMethod) ?: svc.defSearchMethod
@@ -1217,6 +1346,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun sendLike(login: String) {
+        if (svc.id == "ok") {
+            okSend("like", okVal("likeUrl", svc.defLikeUrl), okParams(okVal("likeBody", svc.defLikeBody), login, okMeta[login] ?: "", 0L), login)
+            return
+        }
         val tmpl = prefs.getString("likeUrl", svc.defLikeUrl) ?: svc.defLikeUrl
         val enc = URLEncoder.encode(login, "UTF-8")
         val url = tmpl.replace("{login}", enc)
@@ -1235,6 +1368,113 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         w().evaluateJavascript(
             "if(window.__lk){window.__lk.like(${JSONObject.quote(login)}, ${JSONObject.quote(url)}, ${JSONObject.quote(method)}, ${JSONObject.quote(body)});}else{Rec.apiErr('notready-like', ${JSONObject.quote(login)});}", null
         )
+    }
+
+    // ---------- OK: обмен с окном мини-приложения ----------
+    // Значение настройки; пустое считается «по умолчанию»
+    private fun okVal(key: String, def: String): String = (prefs.getString(key, def) ?: def).ifBlank { def }
+
+    // «user_id={login}&meta={meta}» -> JSON с параметрами (значения подставляются как есть, без перекодирования)
+    private fun okParams(tmpl: String, login: String, meta: String, off: Long): JSONObject {
+        val o = JSONObject()
+        for (part in tmpl.split("&")) {
+            if (part.isBlank()) continue
+            val i = part.indexOf('=')
+            val k = if (i < 0) part else part.substring(0, i)
+            val raw = if (i < 0) "" else part.substring(i + 1)
+            val v = java.net.URLDecoder.decode(raw, "UTF-8").replace("{login}", login).replace("{meta}", meta).replace("{offset}", off.toString())
+            o.put(java.net.URLDecoder.decode(k, "UTF-8"), v)
+        }
+        return o
+    }
+
+    private fun okSend(kind: String, url: String, params: JSONObject, login: String) {
+        okSeq++
+        okInId = okSeq
+        okInKind = kind
+        okInLogin = login
+        val c = JSONObject()
+        c.put("id", okSeq)
+        c.put("url", if (url.startsWith("http")) url else "https://okdating-app.ru$url")
+        c.put("params", params)
+        okCmds.clear()
+        okCmds.add(c.toString())
+        waiting = true
+        likeSentAt = SystemClock.elapsedRealtime()
+        h.postDelayed(wd, 20000)
+    }
+
+    private fun onOkReady(host: String) {
+        if (okReadyFlag) return
+        okReadyFlag = true
+        notReady = 0
+        logMsg("🔑 OK: мини-приложение загружено ($host), токен получен")
+    }
+
+    private fun okAuthBad(text: String): Boolean {
+        val t = text.lowercase(Locale.ROOT)
+        return t.contains("\"error") && (t.contains("token") || t.contains("auth") || t.contains("session") || t.contains("unauthor"))
+    }
+
+    // Токен не принят: перезагружаем страницу, приложение само получит новый
+    private fun okReauth(login: String?) {
+        if (!running) return
+        sessionGood = false
+        authFails++
+        errors++
+        lastError = "OK: токен не принят"
+        if (login != null) queue.addFirst(login)
+        if (authFails > 4) {
+            authPause("OK: не удалось получить новый токен (попыток: ${authFails - 1})")
+            return
+        }
+        logMsg("⚠ OK: токен не принят, перезагружаю страницу и беру новый (попытка $authFails из 4)")
+        if (authFails == 1) {
+            val n = restoreCookies()
+            if (n > 0) logMsg("🔑 Вернул сохранённую сессию (cookie: $n)")
+        }
+        loadSite()
+        nextAt = SystemClock.elapsedRealtime() + 15000
+        h.removeCallbacks(tick)
+        h.postDelayed(tick, 15000)
+        onChange?.invoke()
+    }
+
+    private fun onOkResult(id: Int, status: Int, text: String) {
+        if (id != okInId) return
+        okInId = 0
+        if (okInKind == "batch") {
+            h.removeCallbacks(wd)
+            waiting = false
+            if (!running) return
+            if (status == 401 || status == 403 || okAuthBad(text)) {
+                okReauth(null)
+                return
+            }
+            if (status !in 200..299) {
+                handleError("поиск: HTTP $status ${text.take(100)}")
+                return
+            }
+            onBatch(text)
+        } else {
+            onLike(okInLogin, text, status)
+        }
+    }
+
+    private fun onOkErr(id: Int, msg: String) {
+        if (id != okInId) return
+        okInId = 0
+        h.removeCallbacks(wd)
+        waiting = false
+        if (!running) return
+        handleError("OK: запрос не прошёл ($msg)")
+    }
+
+    // Анкета из ленты OK: имя, возраст, расстояние
+    private fun okProf(o: JSONObject): Prof {
+        val d = o.optJSONObject("extra")?.optDouble("distance", -1.0) ?: -1.0
+        val km = if (d >= 0) (if (d >= 10000) "${(d / 1000).toInt()} км" else String.format(Locale.US, "%.1f км", d / 1000)) else ""
+        return Prof(o.optString("name"), o.optString("age"), "ok", "", km)
     }
 
     private fun onApiErr(kind: String, msg: String) {
@@ -1283,6 +1523,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (status == 401 || status == 403) return 24
         if (status !in 200..299) return status
         if (text.trimStart().startsWith("<")) return -1 // вместо ответа пришла HTML-страница (вход, капча)
+        if (svc.id == "ok") {
+            if (!text.trimStart().startsWith("{")) return -1
+            if (okAuthBad(text)) return 24
+            if (j.has("error_code") && j.optInt("error_code", 0) != 0) return -1
+        }
         if (j.has("errno")) return j.optInt("errno", -1)
         if (!j.optBoolean("success", true) || !j.optBoolean("ok", true)) return -1
         val st = j.optString("status", "").lowercase()
@@ -1358,8 +1603,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
         try {
             val mamba = svc.id == "mamba"
+            val ok = svc.id == "ok"
             val j = JSONObject(text)
-            val arr = if (mamba) mambaList(j) else (j.optJSONArray("data") ?: j.optJSONArray("user"))
+            val arr = if (mamba) mambaList(j) else if (ok) j.optJSONArray("users") else (j.optJSONArray("data") ?: j.optJSONArray("user"))
             if (arr == null) {
                 handleError("поиск: нет списка анкет: ${text.take(if (mamba) 400 else 100)}")
                 return
@@ -1367,8 +1613,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             var added = 0
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                val lg = if (mamba) mambaPhotoId(o) else o.optString("login")
+                val lg = if (mamba) mambaPhotoId(o) else if (ok) o.optString("id") else o.optString("login")
                 if (lg.isEmpty()) continue
+                if (ok && (o.optBoolean("is_deleted", false) || o.optBoolean("is_blocked", false))) continue
                 if (!keysLogged) {
                     keysLogged = true
                     val keys = ArrayList<String>()
@@ -1379,7 +1626,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 val already = !mamba && o.optInt("own_like", 0) != 0
                 if (!already && seen.add(lg)) {
                     queue.addLast(lg)
-                    profInfo[lg] = if (mamba) Prof("фото $lg", "", "", "", "") else profileInfo(o)
+                    if (ok) okMeta[lg] = o.optJSONObject("extra")?.optString("meta") ?: ""
+                    profInfo[lg] = if (mamba) Prof("фото $lg", "", "", "", "") else if (ok) okProf(o) else profileInfo(o)
                     added++
                 }
             }
@@ -1390,6 +1638,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 val progressed = last != null && last != offset
                 if (last != null) offset = last
                 hasMore = arr.length() > 0 && progressed
+            } else if (ok) {
+                // лента сама отдаёт следующих; если новых анкет нет, считаем, что на сейчас всё
+                offset += arr.length()
+                hasMore = added > 0
             } else {
                 offset += arr.length()
                 hasMore = j.optInt("has_more", 0) == 1
@@ -1398,9 +1650,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (added > 0) resumedScan = false
             if (added == 0) emptyStreak++ else emptyStreak = 0
             if (seen.size > 30000) seen.clear()
+            if (okMeta.size > 3000) okMeta.keys.retainAll(queue.toSet())
             // в журнал пишем не каждый пустой пролистанный блок
             if (added > 0 || emptyStreak <= 2 || emptyStreak % 5 == 0) {
-                logMsg("🔎 Поиск: позиции $startOff–$offset, новых для лайка: $added, в очереди: ${queue.size}" + if (added == 0) " (все уже лайкнуты, листаю дальше)" else "")
+                logMsg("🔎 Поиск: позиции $startOff–$offset, новых для лайка: $added, в очереди: ${queue.size}" +
+                    (if (ok && j.has("remaining")) ", осталось у сайта: ${j.optInt("remaining", -1)}" else "") +
+                    if (added == 0) " (все уже лайкнуты, листаю дальше)" else "")
             }
             if (!mamba) {
                 prefs.edit().putInt("scanOffset", offset.toInt()).putLong("scanAt", System.currentTimeMillis())
@@ -1515,6 +1770,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         lastError = "errno=24 (вход слетел?)"
         if (authFails > 4) {
             authPause("Не удалось войти автоматически (попыток: ${authFails - 1})")
+            return
+        }
+        if (svc.id == "ok") {
+            authFails--
+            okReauth(login)
             return
         }
         setAuto(true)
