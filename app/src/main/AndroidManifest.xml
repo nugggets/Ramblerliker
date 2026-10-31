@@ -13,8 +13,6 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
         android:label="Rambler Liker"
@@ -65,6 +63,7 @@
         <service
             android:name=".KeepAliveService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="dataSync|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
@@ -75,6 +74,7 @@
             android:name=".MambaKeepAliveService"
             android:process=":mamba"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="dataSync|specialUse|location">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
