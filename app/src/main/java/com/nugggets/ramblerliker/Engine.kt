@@ -437,7 +437,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     fun winCount(): Int = prefs.getInt("winCount", 0)
     // Лимит САЙТА (не наш): сколько сайт даёт лайков и сколько осталось, по его же ответам
     fun limitInfo(): String {
-        val mx = siteMax()
+        // отказ мог быть записан старой версией без счётчика окна: тогда берём число лайков за сегодня
+        val mx = siteMax().let { if (it == 0 && siteLimitActive()) prefs.getInt("count", 0) else it }
         val wc = winCount()
         val head = when {
             siteLimitActive() -> "Лимит сайта исчерпан" + (if (mx > 0) " (давал ~$mx)" else "") + ", сброс через ${siteLimitLeftText()}"
@@ -1985,7 +1986,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun siteLimitPause(reason: String, raw: String = "") {
         val fromSite = parseResetMs(raw)
         // запоминаем, сколько лайков дал сайт до отказа
-        if (winCount() > 0) prefs.edit().putInt("siteMax", winCount()).apply()
+        val made = if (winCount() > 0) winCount() else prefs.getInt("count", 0)
+        if (made > 0) prefs.edit().putInt("siteMax", made).apply()
         // сайт время не назвал: окно считаем от первого лайка (+24 ч). Если оно уже прошло, а отказ остался, проверяем каждые 30 мин
         val winEnd = prefs.getLong("winStartAt", 0L).let { if (it > 0L) it + SITE_LIMIT_MS - System.currentTimeMillis() else 0L }
         val dur = fromSite ?: (if (winEnd > 600000L) winEnd else 1800000L)
