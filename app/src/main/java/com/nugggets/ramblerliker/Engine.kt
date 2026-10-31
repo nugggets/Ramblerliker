@@ -317,7 +317,9 @@ val SERVICES = listOf(
         // оценка возвращает в ответе следующую анкету; в запросе перечисляются остальные уже показанные анкеты
         "/api/sympathy-vote.php?method=vote", "POST", "user_id={login}&type=like&ad_user={ad}{exclude}",
         "/sympathy/vote.php", "GET", "",
-        20, TaborActivity::class.java, TaborKeepAliveService::class.java
+        20, TaborActivity::class.java, TaborKeepAliveService::class.java,
+        // Tabor: сайт пишет на странице «Вы сможете проголосовать через 15 часов, 20 минут и 4 секунды»: берём время оттуда
+        learnWin = false
     ),
     // OK: «ОК Знакомства» это мини-приложение внутри ok.ru (окно другого домена). Лента: dating.getRecommendedUsers,
     // лайк: dating.like (user_id + meta из ленты). Токен и прочие параметры берутся у самого приложения (см. OK_JS)
@@ -613,6 +615,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (prefs.getInt("limitFix", 0) < 46) {
                 if (svc.id == "rambler" && u > 0L) prefs.edit().putLong("siteLimitUntil", minOf(u, 1793522967000L)).putBoolean("siteResetNamed", true).apply()
                 prefs.edit().putInt("limitFix", 46).apply()
+            }
+            // 0.48: у Tabor страница лимита назвала сброс (в 19:52 МСК 31 окт «через 15 ч 20 мин 4 с», то есть около 11:12 1 нояб.), а приложение ждало до 14:14
+            if (prefs.getInt("limitFix", 0) < 47) {
+                if (svc.id == "tabor" && u > 0L) prefs.edit().putLong("siteLimitUntil", minOf(u, 1793520810000L)).putBoolean("siteResetNamed", true).apply()
+                prefs.edit().putInt("limitFix", 47).apply()
             }
         } catch (e: Exception) {
         }
@@ -1995,7 +2002,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Нулевые и странные даты не берём. Возвращает, через сколько миллисекунд сайт сбросит лимит, или null
     private fun parseResetMs(raw: String): Long? {
         val i = raw.indexOf('{')
-        if (i < 0) return null
+        if (i < 0) return parseTextReset(raw)
         val now = System.currentTimeMillis()
         var best: Long? = null
         fun consider(key: String, v: Any?) {
@@ -2026,7 +2033,21 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             walk(JSONObject(raw.substring(i)), 0)
         } catch (e: Exception) {
         }
-        return best
+        return best ?: parseTextReset(raw)
+    }
+
+    // Сайт пишет время сброса словами: «через 15 часов, 20 минут и 4 секунды» (Tabor). Складываем дни, часы, минуты и секунды после «через»
+    private fun parseTextReset(raw: String): Long? {
+        val t = raw.lowercase(Locale.ROOT)
+        val k = t.indexOf("через")
+        if (k < 0) return null
+        val part = t.substring(k + 5).take(120)
+        fun num(unit: String): Long {
+            val m = Regex("(\\d+)\\s*($unit)").find(part)
+            return m?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        }
+        val ms = (num("дн|день|дня|дней|сут") * 86400L + num("час") * 3600L + num("мин") * 60L + num("сек")) * 1000L
+        return if (ms in 60000L..259200000L) ms else null
     }
 
     // Число в поле сброса: время в секундах/миллисекундах от 1970 года или «через N секунд»
@@ -2055,7 +2076,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val winEnd = if (winStart > 0L) winStart + winMs - System.currentTimeMillis() else 0L
         val dur = fromSite ?: (if (winEnd > 600000L) winEnd else 1800000L)
         val until = System.currentTimeMillis() + dur + (if (fromSite != null) 30000L else 0L)
-        prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 46).apply()
+        prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 47).apply()
         limitWait = true
         pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
@@ -2064,6 +2085,16 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val src = if (fromSite != null) "Сайт сам назвал время сброса" else if (winEnd > 600000L) "Время сброса сайт не назвал: считаю окно $wTxt от первого лайка окна" else "Окно $wTxt от первого лайка уже прошло, а сайт всё ещё отказывает: проверяю каждые 30 мин"
         logMsg("⏸ $reason. Лайков в окне до отказа: ${winCount()}. $src, продолжу около ${siteLimitClock()}")
         if (raw.isNotEmpty()) logMsg("   ответ сайта: ${raw.take(600)}")
+        // последний отказ сайта храним отдельно от журнала: журнал вытесняется перезапусками, а диагностике нужен именно он
+        try {
+            val ff = SimpleDateFormat("d.MM HH:mm:ss", Locale("ru"))
+            ff.timeZone = mskTz
+            val wsv = prefs.getLong("winStartAt", 0L)
+            prefs.edit().putString("lastLimitEvt",
+                "${ff.format(Date())} МСК, лайков в окне ${winCount()}, первый лайк окна: ${if (wsv > 0L) ff.format(Date(wsv)) else "не известен"}, " +
+                    "сайт назвал сброс: ${if (fromSite != null) "да (через ${fromSite / 60000L} мин)" else "нет"}, ответ сайта: ${raw.take(800).ifEmpty { "пусто" }}").apply()
+        } catch (e: Exception) {
+        }
         notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через ${siteLimitLeftText()} (около ${siteLimitClock()}), потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + 600000L
         h.removeCallbacks(tick)
