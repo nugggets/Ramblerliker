@@ -500,11 +500,11 @@ open class MainActivity : Activity() {
         if (sv.id == "ok") {
             body.addView(
                 lbl(
-                    "${sv.title}: адреса пока не заданы, нужна запись запросов. " +
+                    "Адреса ${sv.title} заданы по записи запросов: лента dating.getRecommendedUsers, лайк dating.like. " +
+                        "Токен и остальные параметры приложение берёт у самого мини-приложения знакомств, ничего вводить не нужно. " +
                         "1) Вкладка «Браузер»: войди в ОК и открой знакомства. " +
-                        "2) Пролистай пару анкет и один раз поставь лайк. " +
-                        "3) Вкладка «Запись»: нажми «Все методы», в фильтре впиши diag, потом «Копировать» и пришли текст мне. " +
-                        "Куки и токены из текста лучше замени на XXX."
+                        "2) Поставь лимит 3 и жми «Запустить». В журнале должно появиться «OK: мини-приложение загружено, токен получен». " +
+                        "3) Если адрес лайка окажется другим, поставь в «Браузере» один лайк вручную: приложение запомнит адрес само (строка «🔎 OK: запомнил адрес лайка»)."
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
@@ -973,6 +973,45 @@ open class MainActivity : Activity() {
         }
     }
 
+    // OK: если в «Браузере» поставлен лайк вручную, запоминаем его адрес и параметры (user_id -> {login}, meta -> {meta})
+    private fun learnOkLike(o: JSONObject) {
+        try {
+            val u = o.optString("u")
+            val i = u.indexOf("okdating-app.ru/api/")
+            if (i < 0) return
+            val m = u.substring(i + 20).substringBefore("?")
+            val ml = m.lowercase()
+            if (!ml.startsWith("dating.") || !(ml.contains("like") || ml.contains("react") || ml.contains("vote"))) return
+            if (listOf("dislike", "unlike", "get", "list", "super", "skip", "remove", "revoke", "delete", "count").any { ml.contains(it) }) return
+            val p = o.optString("p")
+            if (!p.startsWith("FormData: ") || !p.contains("user_id=")) return
+            val parts = ArrayList<String>()
+            for (kv in p.removePrefix("FormData: ").split("&")) {
+                val k = kv.substringBefore("=")
+                val v = kv.substringAfter("=", "")
+                if (k.isEmpty() || k.startsWith("_")) continue
+                when {
+                    k == "user_id" -> parts.add("user_id={login}")
+                    k == "meta" -> parts.add("meta={meta}")
+                    v.contains("...[len") -> continue
+                    else -> parts.add("$k=$v")
+                }
+            }
+            if (!parts.contains("user_id={login}")) return
+            val url = "https://okdating-app.ru/api/$m"
+            val body = parts.joinToString("&")
+            if (prefs.getString("likeUrl", "") == url && prefs.getString("likeBody", "") == body) return
+            prefs.edit().putString("likeUrl", url).putString("likeMethod", "POST").putString("likeBody", body).apply()
+            runOnUiThread {
+                etLikeUrl.setText(url)
+                etLikeMethod.setText("POST")
+                etLikeBody.setText(body)
+                engine.logMsg("🔎 OK: запомнил адрес лайка из твоего лайка: $m, тело: $body")
+            }
+        } catch (e: Exception) {
+        }
+    }
+
     inner class UiBridge {
         @JavascriptInterface
         fun push(s: String) {
@@ -989,6 +1028,7 @@ open class MainActivity : Activity() {
                         prefs.edit().putString("mvars", mv.groupValues[1]).apply()
                     }
                 }
+                if (engine.svc.id == "ok") learnOkLike(o)
                 runOnUiThread {
                     o.put("t", timeF.format(Date()))
                     rec.add(o)
