@@ -760,7 +760,7 @@ open class MainActivity : Activity() {
         stCount.setIf(cnt.toString())
         stLimit.setIf(" / $lim")
         stBar.frac = if (lim > 0) cnt.toFloat() / lim else 0f
-        stLeft.setIf(if (engine.likesLeft < 0) "" else "у сайта осталось: ${engine.likesLeft}")
+        stLeft.setIf(engine.limitInfo())
         tHour.setIf(if (engine.running) engine.hourCount.toString() else "-")
         tSess.setIf(engine.sessLikes.toString())
         tQueue.setIf(engine.queue.size.toString())

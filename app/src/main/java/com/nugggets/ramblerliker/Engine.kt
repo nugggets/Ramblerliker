@@ -428,6 +428,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val m = (siteLimitLeftMs() + 59999L) / 60000L
         return if (m >= 60) "${m / 60} ч ${m % 60} мин" else "$m мин"
     }
+    // Факт по лимиту сайта: сколько лайков удалось поставить за окно до отказа (запоминается при каждом отказе)
+    fun siteMax(): Int = prefs.getInt("siteMax", 0)
+    fun winCount(): Int = prefs.getInt("winCount", 0)
+    fun limitInfo(): String {
+        val mx = siteMax()
+        val left = if (likesLeft >= 0) "осталось ${likesLeft}" else "осталось ?"
+        return "лимит сайта: " + (if (mx > 0) "~$mx лайков (по факту)" else "ещё не выяснен") + " · в окне поставлено ${winCount()} · $left"
+    }
+
     private fun siteLimitClock(): String {
         val f = SimpleDateFormat("HH:mm, d MMM", Locale("ru"))
         f.timeZone = mskTz
@@ -617,6 +626,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             j.put("verdict", verdict())
             j.put("count", prefs.getInt("count", 0))
             j.put("limit", prefs.getInt("limit", DEFAULT_LIMIT))
+            j.put("left", likesLeft)
+            j.put("siteMax", siteMax())
+            j.put("winCount", winCount())
             j.put("day", prefs.getString("day", "") ?: "")
             j.put("sess", sessLikes)
             j.put("hour", hourCount)
@@ -654,7 +666,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     fun statusText(): String =
         verdict() + "\n" + (if (running) "РАБОТАЕТ" else "остановлен") +
             "\nлайков сегодня: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}" +
-            "\nосталось у сайта: ${if (likesLeft < 0) "?" else likesLeft.toString()}" +
+            "\n" + limitInfo() +
             "\nлайков за сессию: $sessLikes" +
             "\nэтот час: ${hourInfo()}" +
             "\nв очереди анкет: ${queue.size}" +
@@ -1195,7 +1207,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             return
         }
         if (prefs.getLong("siteLimitUntil", 0L) > 0L) {
-            prefs.edit().remove("siteLimitUntil").apply()
+            prefs.edit().remove("siteLimitUntil").putLong("winStartAt", 0L).putInt("winCount", 0).apply()
             limitWait = false
             pauseUntil = 0L
             likesLeft = -1
@@ -1661,6 +1673,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 prefs.edit().putInt("scanOffset", offset.toInt()).putLong("scanAt", System.currentTimeMillis())
                     .putInt("scanSig", searchBody().hashCode()).apply()
             }
+            if (ok && arr.length() == 0 && j.has("remaining") && j.optInt("remaining", 1) <= 0) {
+                likesLeft = 0
+                siteLimitPause("Лимит сайта исчерпан (лента пуста, осталось 0)", text)
+                return
+            }
             if (added == 0 && !hasMore && resumedScan) {
                 // сохранённая позиция оказалась за концом списка: начинаем с начала сразу
                 resumedScan = false
@@ -1712,7 +1729,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     val ow = j.optString("photoOwnerId", "")
                     if (ow.isNotEmpty()) profInfo[login] = Prof("профиль $ow (фото $login)", "", "", "", "")
                 }
-                prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).apply()
+                val ed = prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).putInt("winCount", winCount() + 1)
+                if (prefs.getLong("winStartAt", 0L) == 0L) ed.putLong("winStartAt", System.currentTimeMillis())
+                ed.apply()
                 sessLikes++
                 hourCount++
                 lastLikeAt = SystemClock.elapsedRealtime()
@@ -1728,6 +1747,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 }
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
+                if (svc.id == "ok" && j.has("remaining")) likesLeft = j.optInt("remaining", -1)
                 val prof = profInfo[login]?.let { fmtProf(it) } ?: "данных анкеты нет"
                 val left = if (likesLeft < 0) "?" else likesLeft.toString()
                 val cnt = prefs.getInt("count", 0)
@@ -1747,7 +1767,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 addReport(login)
                 profInfo.remove(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
-                if (j.has("likesleft") && likesLeft <= 0) {
+                if ((j.has("likesleft") || (svc.id == "ok" && j.has("remaining"))) && likesLeft <= 0) {
                     siteLimitPause("Лайки у сайта закончились", text)
                     return
                 }
@@ -1900,15 +1920,19 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // а если сайт его не назвал, ждём 24 часа
     private fun siteLimitPause(reason: String, raw: String = "") {
         val fromSite = parseResetMs(raw)
-        val dur = fromSite ?: SITE_LIMIT_MS
+        // запоминаем, сколько лайков дал сайт до отказа
+        if (winCount() > 0) prefs.edit().putInt("siteMax", winCount()).apply()
+        // сайт время не назвал: окно считаем от первого лайка (+24 ч). Если оно уже прошло, а отказ остался, проверяем каждые 30 мин
+        val winEnd = prefs.getLong("winStartAt", 0L).let { if (it > 0L) it + SITE_LIMIT_MS - System.currentTimeMillis() else 0L }
+        val dur = fromSite ?: (if (winEnd > 600000L) winEnd else 1800000L)
         val until = System.currentTimeMillis() + dur + (if (fromSite != null) 30000L else 0L)
         prefs.edit().putLong("siteLimitUntil", until).apply()
         limitWait = true
         pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
         likesLeft = 0
-        val src = if (fromSite != null) "Сайт сам назвал время сброса" else "Время сброса сайт не назвал, жду 24 часа"
-        logMsg("⏸ $reason. Своих лайков сегодня поставлено: ${prefs.getInt("count", 0)}. $src, продолжу около ${siteLimitClock()}")
+        val src = if (fromSite != null) "Сайт сам назвал время сброса" else if (winEnd > 600000L) "Время сброса сайт не назвал: считаю сутки от первого лайка окна" else "Сутки от первого лайка уже прошли, а сайт всё ещё отказывает: проверяю каждые 30 мин"
+        logMsg("⏸ $reason. Лайков в окне до отказа: ${winCount()}. $src, продолжу около ${siteLimitClock()}")
         if (raw.isNotEmpty()) logMsg("   ответ сайта: ${raw.take(300)}")
         notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через ${siteLimitLeftText()} (около ${siteLimitClock()}), потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + 600000L
