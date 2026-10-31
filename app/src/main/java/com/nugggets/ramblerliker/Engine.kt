@@ -43,6 +43,7 @@ const val DEFAULT_LIMIT = 60
 const val DEFAULT_RATE_MIN = 60f
 const val DEFAULT_RATE_MAX = 80f
 const val MAX_LIMIT = 2000
+const val SITE_LIMIT_MS = 24L * 3600000L // лимит лайков у сайта: ждём сутки до сброса
 const val DEFAULT_WIN_FROM = 9
 const val DEFAULT_WIN_TO = 23
 const val LOG_MAX = 500
@@ -340,6 +341,20 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     var limitWait = false
     var pauseUntil = 0L
     var pauseClock = ""
+
+    // Лимит лайков у сайта (у каждого сайта свой, число мы не знаем: ориентируемся на ответ сайта).
+    // Конец ожидания хранится в настройках по настенным часам, чтобы отсчёт переживал перезапуск приложения
+    fun siteLimitLeftMs(): Long = maxOf(0L, prefs.getLong("siteLimitUntil", 0L) - System.currentTimeMillis())
+    fun siteLimitActive(): Boolean = siteLimitLeftMs() > 0L
+    fun siteLimitLeftText(): String {
+        val m = (siteLimitLeftMs() + 59999L) / 60000L
+        return if (m >= 60) "${m / 60} ч ${m % 60} мин" else "$m мин"
+    }
+    private fun siteLimitClock(): String {
+        val f = SimpleDateFormat("HH:mm, d MMM", Locale("ru"))
+        f.timeZone = mskTz
+        return f.format(Date(prefs.getLong("siteLimitUntil", 0L))) + " МСК"
+    }
     var nightLogged = false
     var autoOn = false
     var authFails = 0
@@ -482,6 +497,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Короткий ответ на главный вопрос: ставятся ли лайки
     fun verdict(): String {
         if (!running) return if (sessLikes > 0) "■ остановлен, лайков за сессию: $sessLikes" else "■ остановлен"
+        if (siteLimitActive()) return "⏸ Лайки у сайта закончились. До сброса ${siteLimitLeftText()} (около ${siteLimitClock()})"
         if (limitWait && pauseUntil > SystemClock.elapsedRealtime()) return "⏸ лимит исчерпан, продолжу около $pauseClock"
         if (nightLogged) return "🌙 вне окна ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК, сейчас ${mskNow()} МСК"
         if (autoOn) return "🔑 вход слетел, захожу сам (попытка $authFails из 4)"
@@ -493,6 +509,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Код состояния для цвета и подписи: off, wait, ok, limit, night, auth, err
     fun stateCode(): String {
         if (!running) return "off"
+        if (siteLimitActive()) return "limit"
         if (limitWait && pauseUntil > SystemClock.elapsedRealtime()) return "limit"
         if (nightLogged) return "night"
         if (autoOn) return "auth"
@@ -536,6 +553,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     fun nextInfo(): String {
         if (!running) return "-"
+        if (siteLimitActive()) return "сброс лимита через ${siteLimitLeftText()}"
         if (waiting) return "ждём ответ сайта"
         val left = (nextAt - SystemClock.elapsedRealtime()) / 1000
         return if (left > 3600) "через ${left / 3600} ч ${left % 3600 / 60} мин" else if (left > 120) "через ${left / 60} мин" else if (left > 0) "через $left с" else "сейчас"
@@ -905,6 +923,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun updateNotif() {
         if (!running) return
         val state = when {
+            siteLimitActive() -> "лимит сайта, сброс через ${siteLimitLeftText()}"
             limitWait && pauseUntil > SystemClock.elapsedRealtime() -> "пауза до $pauseClock"
             nightLogged -> "вне окна работы"
             autoOn -> "захожу в аккаунт"
@@ -981,6 +1000,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         pauseUntil = 0L
         errLevel = 0
         lastNotif = ""
+        if (siteLimitActive()) {
+            limitWait = true
+            pauseUntil = SystemClock.elapsedRealtime() + siteLimitLeftMs()
+        }
         logMsg("▶ Старт. Лимит ${prefs.getInt("limit", DEFAULT_LIMIT)}/сутки, темп ${rateText()} лайков в минуту, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         offset = resumeOffset()
         prefs.edit().putBoolean("wantRunning", true).apply()
@@ -1036,10 +1059,26 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (!prefs.getString("day", "").isNullOrEmpty()) logMsg("Новый день, счётчик лайков сброшен")
             prefs.edit().putString("day", today).putInt("count", 0).apply()
             likesLeft = -1
-            if (limitWait) {
+            if (limitWait && !siteLimitActive()) {
                 limitPause("Лимит обновился, сразу не начинаю", false)
                 return
             }
+        }
+        if (siteLimitActive()) {
+            // ждём не одним длинным таймером, а короткими шагами: отсчёт идёт по часам и не зависит от сна телефона
+            val d = minOf(siteLimitLeftMs(), 600000L) + 1000L
+            nextAt = SystemClock.elapsedRealtime() + d
+            h.removeCallbacks(tick)
+            h.postDelayed(tick, d)
+            onChange?.invoke()
+            return
+        }
+        if (prefs.getLong("siteLimitUntil", 0L) > 0L) {
+            prefs.edit().remove("siteLimitUntil").apply()
+            limitWait = false
+            pauseUntil = 0L
+            likesLeft = -1
+            logMsg("▶ Сутки после лимита сайта прошли, лимит должен был сброситься. Продолжаю")
         }
         val limit = prefs.getInt("limit", DEFAULT_LIMIT)
         if (prefs.getInt("count", 0) >= limit) {
@@ -1264,6 +1303,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 return
             }
             val stub = j.optString("stub", "")
+            if (stub.isNotEmpty() && looksLikeLimit(stub)) {
+                logMsg("⚠ Табор вместо анкет показывает сообщение: «$stub»")
+                siteLimitPause("Лайки у сайта закончились")
+                return
+            }
             if (stub.isNotEmpty()) {
                 // сайт сам показал экран ошибки вместо анкет (нет геопозиции, лимит, анкеты закончились и т.п.)
                 val d = 900000L + rnd.nextInt(600000)
@@ -1436,7 +1480,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 profInfo.remove(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
                 if (j.has("likesleft") && likesLeft <= 0) {
-                    limitPause("Лайки у сайта закончились")
+                    siteLimitPause("Лайки у сайта закончились")
                     return
                 }
                 scheduleNext(extraSec = j.optInt("likestimeout", 0))
@@ -1474,9 +1518,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun handleError(msg: String) {
-        if (likesLeft == 0) {
+        if (likesLeft == 0 || looksLikeLimit(msg)) {
             logMsg("⚠ $msg")
-            limitPause("Лайки у сайта закончились")
+            siteLimitPause("Лайки у сайта закончились")
             return
         }
         errors++
@@ -1525,6 +1569,28 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         nextAt = SystemClock.elapsedRealtime() + d
         h.removeCallbacks(tick)
         h.postDelayed(tick, d)
+        onChange?.invoke()
+    }
+
+    private fun looksLikeLimit(msg: String): Boolean {
+        val t = msg.lowercase(Locale.ROOT)
+        return listOf("лимит", "limit", "исчерп", "закончил").any { t.contains(it) }
+    }
+
+    // Сайт сказал, что лайки закончились: сообщаем об этом и ждём 24 часа до сброса
+    private fun siteLimitPause(reason: String) {
+        val until = System.currentTimeMillis() + SITE_LIMIT_MS
+        prefs.edit().putLong("siteLimitUntil", until).apply()
+        limitWait = true
+        pauseUntil = SystemClock.elapsedRealtime() + SITE_LIMIT_MS
+        pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
+        likesLeft = 0
+        logMsg("⏸ $reason. Своих лайков сегодня поставлено: ${prefs.getInt("count", 0)}. Отсчёт 24 часа до сброса, продолжу около ${siteLimitClock()}")
+        notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через 24 ч (около ${siteLimitClock()}), потом продолжу сам")
+        nextAt = SystemClock.elapsedRealtime() + 600000L
+        h.removeCallbacks(tick)
+        h.postDelayed(tick, 600000L)
+        writeStatus(true)
         onChange?.invoke()
     }
 
