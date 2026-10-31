@@ -66,23 +66,31 @@ private const val HOOK_JS = """
 (function(){
  if(window.__rec) return; window.__rec=1;
  var send=function(o){try{Rec.push(JSON.stringify(o))}catch(e){}};
+ var hs=function(h){ var out=[]; try{ if(!h) return '';
+   if(Array.isArray(h)){ h.forEach(function(p){out.push(p[0]+': '+p[1])}); }
+   else if(typeof h.forEach==='function'){ h.forEach(function(v,k){out.push(k+': '+v)}); }
+   else { for(var k in h) out.push(k+': '+h[k]); }
+  }catch(e){} return out.join('\n'); };
  var of=window.fetch;
  window.__origFetch=of;
  if(of){ window.fetch=function(i,init){
    var url=(typeof i==='string')?i:((i&&i.url)||'');
    var m=(init&&init.method)||(i&&i.method)||'GET';
    var b=(init&&init.body)||'';
+   var hh=hs((init&&init.headers)||(i&&i.headers));
    return of.apply(this,arguments).then(function(r){
-     try{ r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:String(b).slice(0,1000),r:t.slice(0,4000)}); }); }catch(e){}
+     try{ r.clone().text().then(function(t){ send({m:m,u:url,s:r.status,p:String(b).slice(0,1000),h:hh,r:t.slice(0,4000)}); }); }catch(e){}
      return r; });
  }; }
  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
- XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;return xo.apply(this,arguments)};
+ XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;this.__h=[];return xo.apply(this,arguments)};
+ var xsh=XMLHttpRequest.prototype.setRequestHeader;
+ XMLHttpRequest.prototype.setRequestHeader=function(n,v){try{(this.__h=this.__h||[]).push(n+': '+v)}catch(e){} return xsh.apply(this,arguments)};
  XMLHttpRequest.prototype.send=function(b){
    var x=this;
    this.addEventListener('loadend',function(){
      var t=''; try{t=x.responseText||''}catch(e){}
-     send({m:x.__m,u:x.__u,s:x.status,p:String(b||'').slice(0,1000),r:t.slice(0,4000)});
+     send({m:x.__m,u:x.__u,s:x.status,p:String(b||'').slice(0,1000),h:(x.__h||[]).join('\n'),r:t.slice(0,4000)});
    });
    return xs.apply(this,arguments)};
 })();
@@ -1067,7 +1075,14 @@ open class MainActivity : Activity() {
         val a = JSONArray()
         for (o in filtered()) {
             val c = JSONObject(o.toString())
-            c.put("r", c.optString("r").take(700))
+            c.put("r", c.optString("r").take(if (c.optString("u").contains("okdating")) 3000 else 700))
+            val hd = c.optString("h")
+            if (hd.isNotEmpty()) {
+                c.put("h", hd.split("\n").joinToString("\n") { ln ->
+                    val i = ln.indexOf(": ")
+                    if (i > 0 && ln.length - i - 2 > 24) ln.substring(0, i + 2 + 10) + "…[длина " + (ln.length - i - 2) + "]" else ln
+                })
+            }
             a.put(c)
         }
         return redact(a.toString(1))
