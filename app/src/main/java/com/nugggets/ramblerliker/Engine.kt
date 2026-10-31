@@ -284,7 +284,11 @@ class Svc(
     val activityCls: Class<*>,
     val keepCls: Class<*>,
     // сколько длится окно лимита лайков у сайта (если сайт сам не назвал время сброса)
-    val limitWindowMs: Long = SITE_LIMIT_MS
+    val limitWindowMs: Long = SITE_LIMIT_MS,
+    // известный лимит лайков за окно (0 = пока не известен, узнаём по ответам сайта)
+    val siteLimit: Int = 0,
+    // учиться длине окна по ответам сайта (у сайтов, где окно известно точно, выключено)
+    val learnWin: Boolean = true
 )
 
 val SERVICES = listOf(
@@ -292,7 +296,9 @@ val SERVICES = listOf(
         "rambler", "Rambler", SITE, listOf(SITE), "rambler.ru", "liker", "",
         COOKIE_URLS, ".rambler.ru",
         DEFAULT_LIKE_URL, "GET", "", DEFAULT_SEARCH_URL, "POST", DEFAULT_SBODY,
-        0, MainActivity::class.java, KeepAliveService::class.java
+        0, MainActivity::class.java, KeepAliveService::class.java,
+        // Rambler: по диагностике сайт отдаёт likesfree=2000 на окно 24 ч, а время сброса в секундах в likestimeout
+        siteLimit = 2000, learnWin = false
     ),
     // Mamba: лайк ставится на фото в «Рейтинге», лента листается по id последнего фото
     Svc(
@@ -441,7 +447,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Лимит САЙТА (не наш): сколько сайт даёт лайков и сколько осталось, по его же ответам
     fun limitInfo(): String {
         // отказ мог быть записан старой версией без счётчика окна: тогда берём число лайков за сегодня
-        val mx = siteMax().let { if (it == 0 && siteLimitActive()) prefs.getInt("count", 0) else it }
+        val mx = siteMax().let { if (it == 0) svc.siteLimit else it }.let { if (it == 0 && siteLimitActive()) prefs.getInt("count", 0) else it }
         val wc = winCount()
         val head = when {
             siteLimitActive() -> "Лимит сайта: " + (if (mx > 0) "$mx лайков" else "лайки") + " за окно, исчерпан"
@@ -487,7 +493,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     private var leftKeyLogged = false
     private val LEFT_KEYS = listOf("likesleft", "likes_left", "remaining", "votes_left", "likes_remaining", "left_likes", "limit_left", "free_likes", "likes_available")
-    private val MAX_KEYS = listOf("likeslimit", "likes_limit", "daily_limit", "limit_total", "total_likes", "max_likes", "likes_total")
+    private val MAX_KEYS = listOf("likesfree", "likeslimit", "likes_limit", "daily_limit", "limit_total", "total_likes", "max_likes", "likes_total")
 
     // Ищет в ответе сайта число по одному из имён полей (на глубину до 3), -1 если нет
     private fun findNum(o: JSONObject, keys: List<String>, depth: Int = 0): Int {
@@ -602,6 +608,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (prefs.getInt("limitFix", 0) < 45) {
                 if (u > 0L && ws > 0L) prefs.edit().putLong("siteLimitUntil", minOf(u, ws + svc.limitWindowMs + 60000L)).apply()
                 prefs.edit().putInt("limitFix", 45).apply()
+            }
+            // 0.46: у Rambler сайт сам назвал сброс (likestimeout 62438 с от 18:28:19 МСК 31 окт), а приложение ждало до 17:35 по своим часам
+            if (prefs.getInt("limitFix", 0) < 46) {
+                if (svc.id == "rambler" && u > 0L) prefs.edit().putLong("siteLimitUntil", minOf(u, 1793522967000L)).putBoolean("siteResetNamed", true).apply()
+                prefs.edit().putInt("limitFix", 46).apply()
             }
         } catch (e: Exception) {
         }
@@ -1850,7 +1861,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 }
                 val mxr = findNum(j, MAX_KEYS)
                 if (mxr > 0) {
-                    prefs.edit().putInt("siteMax", mxr).apply()
+                    prefs.edit().putInt("siteMax", mxr).putBoolean("siteMaxNamed", true).apply()
                 } else if (likesLeft >= 0) {
                     prefs.edit().putInt("siteMax", winCount() + likesLeft).apply()
                 }
@@ -1989,7 +2000,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         var best: Long? = null
         fun consider(key: String, v: Any?) {
             val k = key.lowercase(Locale.ROOT)
-            if (!(k.contains("reset") || k.contains("until") || k.contains("retry"))) return
+            if (!(k.contains("reset") || k.contains("until") || k.contains("retry") || k.contains("timeout"))) return
             var at: Long? = null
             try {
                 if (v is String) {
@@ -2022,7 +2033,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun numToAt(key: String, n: Double, now: Long): Long? = when {
         n > 1.0e12 -> n.toLong()
         n > 1.0e9 -> (n * 1000).toLong()
-        n > 0 && (key.contains("in") || key.contains("after") || key.contains("retry")) -> now + (n * 1000).toLong()
+        n > 0 && (key.contains("in") || key.contains("after") || key.contains("retry") || key.contains("timeout")) -> now + (n * 1000).toLong()
         else -> null
     }
 
@@ -2032,19 +2043,19 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val fromSite = parseResetMs(raw)
         // запоминаем, сколько лайков дал сайт до отказа
         val made = if (winCount() > 0) winCount() else prefs.getInt("count", 0)
-        if (made > 0) prefs.edit().putInt("siteMax", made).apply()
+        if (made > 0 && !prefs.getBoolean("siteMaxNamed", false) && svc.siteLimit == 0) prefs.edit().putInt("siteMax", made).apply()
         val winStart = prefs.getLong("winStartAt", 0L)
         // сайт сам назвал сброс: запоминаем, какое у него окно (сброс минус первый лайк окна), дальше пригодится без ответа сайта
         if (fromSite != null && winStart > 0L) {
             val w = System.currentTimeMillis() + fromSite - winStart
-            if (w in 3600000L..172800000L) prefs.edit().putLong("siteWinMs", w).apply()
+            if (svc.learnWin && w in 3600000L..172800000L) prefs.edit().putLong("siteWinMs", w).apply()
         }
         val winMs = prefs.getLong("siteWinMs", 0L).let { if (it > 0L) it else svc.limitWindowMs }
         // сайт время не назвал: окно считаем от первого лайка. Если оно уже прошло, а отказ остался, проверяем каждые 30 мин
         val winEnd = if (winStart > 0L) winStart + winMs - System.currentTimeMillis() else 0L
         val dur = fromSite ?: (if (winEnd > 600000L) winEnd else 1800000L)
         val until = System.currentTimeMillis() + dur + (if (fromSite != null) 30000L else 0L)
-        prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 45).apply()
+        prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 46).apply()
         limitWait = true
         pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
