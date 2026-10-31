@@ -84,6 +84,19 @@ private const val HOOK_JS = """
  try{ document.addEventListener('click',function(e){ if(ck++>60) return;
    var r=(e.target&&e.target.getBoundingClientRect)?e.target.getBoundingClientRect():{left:0,top:0,width:0,height:0};
    send({m:'CLICK',u:String(location.href).slice(0,90),s:0,p:'CLICK '+dsc(e.target)+' | rect '+Math.round(r.left)+','+Math.round(r.top)+','+Math.round(r.width)+'x'+Math.round(r.height),h:'',r:''}); },true); }catch(e){}
+ var rn=0, rc=0;
+ var resPoll=function(){ try{ var l=performance.getEntriesByType('resource');
+   for(;rn<l.length;rn++){ var e=l[rn], it=e.initiatorType||'';
+    if(it==='img'||it==='css'||it==='script'||it==='link'||it==='font'||it==='video'||it==='audio') continue;
+    if(rc++>150) return;
+    send({m:'RES',u:String(e.name).slice(0,160),s:0,p:'DIAG '+it+' '+Math.round(e.duration)+'ms '+(e.transferSize||0)+'b @'+String(location.hostname),h:'',r:''}); } }catch(x){} };
+ try{ setInterval(resPoll,2000); }catch(e){}
+ try{ var OWk=window.Worker; if(OWk){ window.Worker=function(u,o){
+   try{ send({m:'WORKER',u:String(u).slice(0,160),s:0,p:'DIAG worker @'+String(location.hostname),h:'',r:''}); }catch(e){}
+   return o?new OWk(u,o):new OWk(u); }; window.Worker.prototype=OWk.prototype; } }catch(e){}
+ try{ var OES=window.EventSource; if(OES){ window.EventSource=function(u,o){
+   try{ send({m:'SSE',u:String(u).slice(0,160),s:0,p:'DIAG eventsource @'+String(location.hostname),h:'',r:''}); }catch(e){}
+   return o?new OES(u,o):new OES(u); }; window.EventSource.prototype=OES.prototype; } }catch(e){}
  var wsn=0, OW=window.WebSocket;
  if(OW){ window.WebSocket=function(u,pr){ var ws=pr?new OW(u,pr):new OW(u);
    try{ send({m:'WS',u:String(u),s:0,p:'open',h:'',r:''});
@@ -484,8 +497,8 @@ open class MainActivity : Activity() {
                 lbl(
                     "${sv.title}: адреса пока не заданы, нужна запись запросов. " +
                         "1) Вкладка «Браузер»: войди в ОК и открой знакомства. " +
-                        "2) Пролистай пару анкет и один раз нажми кнопку лайка. " +
-                        "3) Вкладка «Запись»: нажми «Все методы», в фильтре впиши click, потом «Копировать» и пришли текст мне. " +
+                        "2) Пролистай пару анкет и один раз поставь лайк. " +
+                        "3) Вкладка «Запись»: нажми «Все методы», в фильтре впиши diag, потом «Копировать» и пришли текст мне. " +
                         "Куки и токены из текста лучше замени на XXX."
                 ), lp(MATCH, WRAP, t = 14)
             )
