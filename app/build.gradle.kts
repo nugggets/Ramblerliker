@@ -11,8 +11,8 @@ android {
         applicationId = "com.nugggets.ramblerliker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "0.30"
+        versionCode = 31
+        versionName = "0.31"
     }
 
     signingConfigs {
@@ -37,4 +37,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    // нужен, чтобы запись запросов работала и внутри мини-приложений (iframe), например в OK
+    implementation("androidx.webkit:webkit:1.11.0")
 }

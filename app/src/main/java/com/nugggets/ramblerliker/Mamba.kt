@@ -18,3 +18,12 @@ class TaborActivity : MainActivity() {
 class TaborKeepAliveService : KeepAliveService() {
     override val svcId: String = "tabor"
 }
+
+// Окно и служба OK: отдельный процесс (:ok), работает одновременно с остальными сервисами
+class OkActivity : MainActivity() {
+    override fun serviceId(): String = "ok"
+}
+
+class OkKeepAliveService : KeepAliveService() {
+    override val svcId: String = "ok"
+}

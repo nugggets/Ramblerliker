@@ -59,6 +59,8 @@ import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.widget.FrameLayout
 import android.widget.Switch
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 private const val HOOK_JS = """
 (function(){
@@ -444,6 +446,17 @@ open class MainActivity : Activity() {
                         "1) Вкладка «Браузер»: войди и открой «Рейтинг». " +
                         "2) Фильтры (пол, возраст, город) задай один раз на самом сайте: приложение берёт их оттуда. " +
                         "3) Поставь лимит 3 и жми «Запустить». Лента листается по id последнего фото, лайк ставится на фото."
+                ), lp(MATCH, WRAP, t = 14)
+            )
+        }
+        if (sv.id == "ok") {
+            body.addView(
+                lbl(
+                    "${sv.title}: адреса пока не заданы, нужна запись запросов. " +
+                        "1) Вкладка «Браузер»: войди в ОК и открой знакомства. " +
+                        "2) Пролистай пару анкет и поставь один лайк. " +
+                        "3) Вкладка «Запись»: нажми «Только POST», потом «Копировать» и пришли текст мне. " +
+                        "Куки и токены из текста лучше замени на XXX."
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
@@ -879,6 +892,18 @@ open class MainActivity : Activity() {
             }
         }
         web.addJavascriptInterface(UiBridge(), "Rec")
+        // OK: знакомства открываются во вложенном окне (iframe), поэтому запись запросов ставим во все окна страницы
+        if (engine.svc.id == "ok") {
+            try {
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    WebViewCompat.addDocumentStartJavaScript(web, HOOK_JS, setOf("*"))
+                } else {
+                    engine.logMsg("⚠ Эта версия WebView не умеет писать запросы внутри вложенных окон. Обнови «Android System WebView» в Google Play")
+                }
+            } catch (e: Exception) {
+                engine.logMsg("⚠ Не удалось включить запись во вложенных окнах: ${e.message}")
+            }
+        }
         web.webViewClient = object : WebViewClient() {
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
                 engine.logMsg("⚠ Процесс страницы упал, пересоздаю окно (служба лайков работает отдельно)")

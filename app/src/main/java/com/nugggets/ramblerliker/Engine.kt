@@ -242,6 +242,15 @@ val SERVICES = listOf(
         "/api/sympathy-vote.php?method=vote", "POST", "user_id={login}&type=like&ad_user={ad}{exclude}",
         "/sympathy/vote.php", "GET", "",
         20, TaborActivity::class.java, TaborKeepAliveService::class.java
+    ),
+    // OK: «ОК Знакомства» это мини-приложение внутри ok.ru. Адреса лайка и ленты пока неизвестны:
+    // сначала записываем запросы на вкладке «Запись», потом задаём их на вкладке «Лайки»
+    Svc(
+        "ok", "OK", "https://ok.ru/app/dating",
+        listOf("https://ok.ru", "https://www.ok.ru", "https://m.ok.ru"), "ok.ru", "liker_ok", "_ok",
+        listOf("https://ok.ru/", "https://www.ok.ru/", "https://m.ok.ru/"), ".ok.ru",
+        "", "POST", "", "", "GET", "",
+        30, OkActivity::class.java, OkKeepAliveService::class.java
     )
 )
 
@@ -976,6 +985,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     fun startLikes(): Boolean {
         if (running) return false
+        if (svc.id == "ok" && (prefs.getString("likeUrl", svc.defLikeUrl) ?: "").isBlank()) {
+            logMsg("ℹ OK: адрес лайка ещё не задан. Вкладка «Браузер»: войди и открой знакомства, поставь один лайк. Вкладка «Запись»: нажми «Копировать» и пришли мне текст, я пропишу адреса")
+            return false
+        }
         running = true
         waiting = false
         errors = 0

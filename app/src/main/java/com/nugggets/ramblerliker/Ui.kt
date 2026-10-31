@@ -40,6 +40,7 @@ object Pal {
 fun svcColor(id: String): Int = when (id) {
     "mamba" -> 0xFFFF5FA2.toInt()
     "tabor" -> 0xFF2EC4B6.toInt()
+    "ok" -> 0xFFEE8208.toInt()
     else -> 0xFF4C8DFF.toInt()
 }
 
