@@ -50,6 +50,23 @@
             </intent-filter>
         </activity>
 
+        <!-- Окно Табора: отдельный процесс и отдельная задача, свой значок запуска -->
+        <activity
+            android:name=".TaborActivity"
+            android:process=":tabor"
+            android:label="Tabor Liker"
+            android:taskAffinity="com.nugggets.ramblerliker.tabor"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
@@ -79,6 +96,17 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Постоянная работа автолайков Mamba в фоне" />
+        </service>
+
+        <service
+            android:name=".TaborKeepAliveService"
+            android:process=":tabor"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync|specialUse|location">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Постоянная работа автолайков Tabor в фоне" />
         </service>
     </application>
 </manifest>

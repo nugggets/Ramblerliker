@@ -317,13 +317,22 @@ open class MainActivity : Activity() {
                     addView(etLikeBody)
                     addView(TextView(this@MainActivity).apply { text = "URL поиска ({offset} подставляется сам):" })
                     addView(etSearchUrl)
-                    if (engine.svc.id != "rambler") {
+                    if (engine.svc.id == "mamba") {
                         addView(TextView(this@MainActivity).apply {
                             textSize = 12f
                             text = "Адреса ${engine.svc.title} уже заданы: лента «Рейтинг» и лайк фото. " +
                                 "1) Вкладка «Браузер»: войди и открой «Рейтинг». " +
                                 "2) Фильтры (пол, возраст, город) задай один раз на самом сайте: приложение берёт их оттуда. " +
                                 "3) Поставь лимит 3 и жми «Старт». Лента листается по id последнего фото, лайк ставится на фото."
+                        })
+                    }
+                    if (engine.svc.id == "tabor") {
+                        addView(TextView(this@MainActivity).apply {
+                            textSize = 12f
+                            text = "Адреса ${engine.svc.title} ещё не настроены. Чтобы снять их: 1) вкладка «Браузер», войди и открой голосование. " +
+                                "2) Поставь вручную 3–4 оценки. 3) Вкладка «Запросы»: нажми «Копировать» и пришли текст. " +
+                                "4) Вкладка «Журнал»: пришли строки «Страница загружена» за это время (ими видно переходы по ссылкам и формам). " +
+                                "По ним я пропишу адреса, и «Старт» заработает."
                         })
                     }
                     addView(TextView(this@MainActivity).apply {
@@ -750,7 +759,7 @@ open class MainActivity : Activity() {
         val lb = etLikeBody.text.toString().trim()
         val su = etSearchUrl.text.toString().trim().ifEmpty { engine.svc.defSearchUrl }
         if (!url.contains("{login}") && !lb.contains("{login}")) {
-            toast("В URL или теле лайка должно быть {login}")
+            toast(if (engine.svc.defLikeUrl.isEmpty()) "Адреса ${engine.svc.title} ещё не настроены, см. подсказку ниже" else "В URL или теле лайка должно быть {login}")
             return false
         }
         if (su.isEmpty()) {

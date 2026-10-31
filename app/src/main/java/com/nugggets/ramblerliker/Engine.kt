@@ -200,6 +200,14 @@ val SERVICES = listOf(
         "/api/ratings/v2/voting/photos/{login}/like?_loc%5Blocale%5D=ru", "POST", "{\"voteSource\":1}",
         "/api/graphql/?_loc[locale]=ru", "POST", "",
         10, MambaActivity::class.java, MambaKeepAliveService::class.java
+    ),
+    // Табор: заготовка. Адреса поиска и лайка пока пустые, их нужно снять с сайта (вкладки «Запросы» и «Журнал»)
+    Svc(
+        "tabor", "Tabor", "https://m.tabor.ru/sympathy/vote.php",
+        listOf("https://m.tabor.ru", "https://tabor.ru", "https://www.tabor.ru"), "tabor.ru", "liker_tabor", "_tabor",
+        listOf("https://m.tabor.ru/", "https://tabor.ru/", "https://www.tabor.ru/"), ".tabor.ru",
+        "", "GET", "", "", "GET", "",
+        20, TaborActivity::class.java, TaborKeepAliveService::class.java
     )
 )
 

@@ -9,3 +9,12 @@ class MambaActivity : MainActivity() {
 class MambaKeepAliveService : KeepAliveService() {
     override val svcId: String = "mamba"
 }
+
+// Окно и служба Табора: отдельный процесс (:tabor), работают одновременно с Rambler и Mamba
+class TaborActivity : MainActivity() {
+    override fun serviceId(): String = "tabor"
+}
+
+class TaborKeepAliveService : KeepAliveService() {
+    override val svcId: String = "tabor"
+}
