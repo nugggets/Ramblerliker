@@ -331,6 +331,14 @@ val SERVICES = listOf(
         OK_API + "dating.getRecommendedUsers", "POST", "count=20",
         30, OkActivity::class.java, OkKeepAliveService::class.java,
         12L * 3600000L // OK: по диагностике окно 12 часов (сброс = первый лайк окна + 12 ч)
+    ),
+    // Love.ru: пока только вход и запись из «Браузера». Адреса ленты и лайка неизвестны, их даст диагностика с сайта
+    Svc(
+        "love", "Love.ru", "https://love.ru/znakomstva/female/18-33/",
+        listOf("https://love.ru", "https://www.love.ru", "https://m.love.ru"), "love.ru", "liker_love", "_love",
+        listOf("https://love.ru/", "https://www.love.ru/", "https://m.love.ru/"), ".love.ru",
+        "", "POST", "", "", "GET", "",
+        40, LoveActivity::class.java, LoveKeepAliveService::class.java
     )
 )
 
@@ -1215,6 +1223,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     fun startLikes(): Boolean {
         if (running) return false
+        if (svc.id == "love") {
+            logMsg("Love.ru: лайки ещё не настроены, адреса ленты и лайка пока неизвестны. Войдите на сайт во вкладке «Браузер», поставьте один лайк вручную и пришлите диагностику")
+            return false
+        }
         running = true
         waiting = false
         errors = 0
