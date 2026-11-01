@@ -121,6 +121,63 @@ fun apiJs(merge: Boolean): String = "window.__merge=" + merge + ";" + """
 })();
 """
 
+// Love.ru: лайк ставится нажатием на кнопку «Симпатия» самой страницы (она сама шлёт ?action=sympathy-send и подгружает следующих).
+// Ответ сайта на sympathy-send перехватываем и отдаём движку как ответ на лайк
+const val LOVE_JS = """
+(function(){
+ if(!window.__lk) return;
+ var pend=null, tok=0;
+ function info(){
+  var t=''; try{ var mn=document.querySelector('#main'); t=((mn&&(mn.innerText||mn.textContent))||'').replace(/\s+/g,' ').trim(); }catch(e){}
+  var m=/^(.{1,40}?)\s+(\d{2})\s*(?:лет|год|года)\s*,?\s*([^\d%]{0,40})/.exec(t);
+  return m?{name:m[1],age:m[2],city:m[3].trim()}:{name:t.slice(0,30),age:'',city:''};
+ }
+ function done(body,status,text){
+  if(!pend) return;
+  var p=pend; pend=null; clearTimeout(p.t);
+  var m=/login_to=([^&]+)/.exec(body); var login=m?decodeURIComponent(m[1]):p.tok;
+  var o; try{ o=JSON.parse(text); }catch(e){ Rec.apiLike2(login,status,String(text).slice(0,600)); return; }
+  o._name=p.name; o._age=p.age; o._city=p.city;
+  Rec.apiLike2(login,status,JSON.stringify(o));
+ }
+ function hook(){
+  if(window.__loveHook) return; window.__loveHook=1;
+  var oF=window.fetch;
+  if(oF){ window.fetch=function(i,init){
+    var url=(typeof i==='string')?i:((i&&i.url)||''); var b=(init&&init.body)||'';
+    var p=oF.apply(this,arguments);
+    if(String(url).indexOf('sympathy-send')>=0){ p.then(function(r){ try{ r.clone().text().then(function(t){ done(String(b),r.status,t); }); }catch(e){} }).catch(function(){}); }
+    return p; }; }
+  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,u){ this.__lu=String(u||''); return xo.apply(this,arguments); };
+  XMLHttpRequest.prototype.send=function(b){ var x=this;
+   if((x.__lu||'').indexOf('sympathy-send')>=0){ x.addEventListener('loadend',function(){ var t=''; try{t=x.responseText||'';}catch(e){} done(String(b||''),x.status,t); }); }
+   return xs.apply(this,arguments); };
+ }
+ function closeWins(){ try{ var l=document.querySelectorAll('a.close_window'); for(var i=0;i<l.length;i++){ l[i].click(); } }catch(e){} }
+ window.__lk.boot=function(){
+  try{
+   hook();
+   var b=document.querySelector('#sympathy_btn_send');
+   if(b){ Rec.apiBatch(JSON.stringify({love:true,ids:['L'+Date.now()+'_'+(tok++)]})); return; }
+   var t=((document.body&&(document.body.innerText||document.body.textContent))||'').replace(/\s+/g,' ').trim().slice(0,300);
+   Rec.apiBatch(JSON.stringify({love:true,ids:[],stub:t||'(пустая страница)'}));
+  }catch(e){ Rec.apiErr('boot',String(e)); }
+ };
+ window.__lk.like=function(login,url,method,body){
+  try{
+   hook();
+   var b=document.querySelector('#sympathy_btn_send');
+   if(!b){ Rec.apiErr('notready-like',login); return; }
+   closeWins();
+   var inf=info();
+   pend={tok:login,name:inf.name,age:inf.age,city:inf.city,t:setTimeout(function(){ if(pend){ pend=null; Rec.apiErr('like','сайт не ответил на нажатие «Симпатия» за 15 с'); } },15000)};
+   b.click();
+  }catch(e){ Rec.apiErr('like',String(e)); }
+ };
+})();
+"""
+
 // Для скрытой страницы Mamba: запоминаем заголовки, которые шлёт сам сайт (авторизация и т.п.), чтобы слать их же
 const val HDR_JS = """
 (function(){
@@ -361,7 +418,7 @@ fun yearsText(a: String): String {
 
 // «Katerina, 30 лет — ищет от 29 до 40 лет»
 fun fmtProf(p: Prof): String {
-    if (p.from == "tabor" || p.from == "ok") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
+    if (p.from == "tabor" || p.from == "ok" || p.from == "love") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
     if (p.age.isEmpty() && p.from.isEmpty() && p.to.isEmpty() && (p.name.startsWith("фото ") || p.name.startsWith("профиль "))) return p.name
     val seek = when {
         p.from.isNotEmpty() && p.to.isNotEmpty() -> "ищет от ${p.from} до ${p.to} лет"
@@ -859,6 +916,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun inject(view: WebView?) {
         if (svc.id != "rambler") view?.evaluateJavascript(HDR_JS, null)
         view?.evaluateJavascript(apiJs(svc.id != "rambler"), null)
+        if (svc.id == "love") view?.evaluateJavascript(LOVE_JS, null)
         view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
     }
 
@@ -1223,10 +1281,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     fun startLikes(): Boolean {
         if (running) return false
-        if (svc.id == "love") {
-            logMsg("Love.ru: лайки ещё не настроены, адреса ленты и лайка пока неизвестны. Войдите на сайт во вкладке «Браузер», поставьте один лайк вручную и пришлите диагностику")
-            return false
-        }
         running = true
         waiting = false
         errors = 0
@@ -1453,8 +1507,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun fetchBatch() {
-        if (svc.id == "tabor") {
-            // у Табора списка нет: первые анкеты берём со страницы, дальше их присылает каждая оценка
+        if (svc.id == "tabor" || svc.id == "love") {
+            // у Табора списка нет: первые анкеты берём со страницы, дальше их присылает каждая оценка. Love.ru: страница сама ведёт ленту, мы жмём её кнопку
             waiting = true
             h.postDelayed(wd, 20000)
             w().evaluateJavascript("if(window.__lk&&window.__lk.boot){window.__lk.boot();}else{Rec.apiErr('notready-batch','');}", null)
@@ -1478,6 +1532,16 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun sendLike(login: String) {
         if (svc.id == "ok") {
             okSend("like", okVal("likeUrl", svc.defLikeUrl), okParams(okVal("likeBody", svc.defLikeBody), login, okMeta[login] ?: "", 0L), login)
+            return
+        }
+        if (svc.id == "love") {
+            // login здесь только метка очереди, настоящий логин анкеты приходит из запроса сайта
+            waiting = true
+            likeSentAt = SystemClock.elapsedRealtime()
+            h.postDelayed(wd, 20000)
+            w().evaluateJavascript(
+                "if(window.__lk){window.__lk.like(${JSONObject.quote(login)}, '', '', '');}else{Rec.apiErr('notready-like', ${JSONObject.quote(login)});}", null
+            )
             return
         }
         val tmpl = prefs.getString("likeUrl", svc.defLikeUrl) ?: svc.defLikeUrl
@@ -1647,6 +1711,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Итог лайка: 0 успех, 24 вход слетел, остальное ошибка. Rambler: по полю errno, как раньше
     private fun likeCode(j: JSONObject, text: String, status: Int): Int {
         if (svc.id == "rambler") return j.optInt("errno", -1)
+        if (svc.id == "love") {
+            if (status == 401 || status == 403) return 24
+            if (status !in 200..299) return status
+            if (text.trimStart().startsWith("<")) return 24
+            return if (j.optInt("status", 0) == 1) 0 else -1
+        }
         if (svc.id == "tabor") {
             if (status == 401 || status == 403) return 24
             if (status !in 200..299) return status
@@ -1671,6 +1741,45 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (t.isNotEmpty() && t != "0" && t != "false" && t != "[]" && t != "{}") return -1
         }
         return 0
+    }
+
+    private var loveMiss = 0
+
+    // Love.ru: на странице есть кнопка «Симпатия» (ставим метку в очередь) или вместо неё экран лимита/ошибки
+    private fun onLoveBoot(text: String) {
+        try {
+            val j = JSONObject(text)
+            val ids = j.optJSONArray("ids")
+            if (ids != null && ids.length() > 0) {
+                for (i in 0 until ids.length()) {
+                    val id = ids.optString(i)
+                    if (id.isNotEmpty() && seen.add(id)) queue.addLast(id)
+                }
+                loveMiss = 0
+                rowErr = 0
+                scheduleNext(quick = true)
+                return
+            }
+            val stub = j.optString("stub", "")
+            if (stub.isNotEmpty() && looksLikeLimit(stub)) {
+                logMsg("⚠ Love.ru вместо анкет показывает сообщение: «${stub.take(200)}»")
+                loveMiss = 0
+                siteLimitPause("Лайки у сайта закончились", stub)
+                return
+            }
+            // кнопки нет и про лимит не пишет: страница ещё грузится, либо экран входа/ошибки
+            loveMiss++
+            if (loveMiss % 4 == 0) loadSite()
+            if (loveMiss >= 12) {
+                loveMiss = 0
+                handleError("Love.ru: не вижу кнопку «Симпатия» на странице: ${stub.take(200)}")
+                return
+            }
+            nextAt = SystemClock.elapsedRealtime() + 3000
+            h.postDelayed(tick, 3000)
+        } catch (ex: Exception) {
+            handleError("Love.ru: страница не разобрана: ${text.take(100)}")
+        }
     }
 
     private fun onTaborBoot(text: String) {
@@ -1732,6 +1841,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         notReady = 0
         if (svc.id == "tabor") {
             onTaborBoot(text)
+            return
+        }
+        if (svc.id == "love") {
+            onLoveBoot(text)
             return
         }
         try {
@@ -1838,6 +1951,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val j = parseLike(text)
             val code = likeCode(j, text, status)
             if (code == 0) {
+                if (svc.id == "love") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "love", "", j.optString("_city"))
                 if (svc.id == "tabor") {
                     val u = j.optJSONObject("user")
                     val nid = u?.optString("id") ?: ""
