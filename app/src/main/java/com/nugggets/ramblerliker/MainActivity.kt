@@ -1115,13 +1115,17 @@ open class MainActivity : Activity() {
             sb.append("адрес ленты: ${prefs.getString("searchUrl", engine.svc.defSearchUrl)}\n")
             sb.append("\n=== Последний отказ сайта (сохраняется между перезапусками) ===\n").append(prefs.getString("lastLimitEvt", "ещё не было") ?: "ещё не было").append("\n")
             sb.append("\n=== Запросы службы (последние) ===\n").append(engine.trace.takeLast(25).joinToString("\n")).append("\n")
-            val recs = rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
+            // у Love.ru адреса ленты и лайка ещё неизвестны, поэтому в диагностику идут и сами запросы сайта (fetch/XHR), а не только клики
+            val netM = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
+            val recs = if (engine.svc.id == "love")
+                rec.filter { it.optString("m") == "CLICK" || (it.optString("m").uppercase() in netM && !it.optString("u").contains("mc.yandex") && !it.optString("u").contains("google")) }.takeLast(24)
+            else rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
             if (engine.svc.id != "ok" || recs.isNotEmpty()) {
                 sb.append("\n=== Запись из «Браузера» ===\n")
                 for (o in recs) {
                     sb.append(o.optString("t")).append(" ").append(o.optString("m")).append(" ").append(o.optString("u").takeLast(60))
-                        .append(" -> ").append(o.optInt("s")).append("\n  ").append(o.optString("p").take(250)).append("\n  ")
-                        .append(o.optString("r").take(1200)).append("\n")
+                        .append(" -> ").append(o.optInt("s")).append("\n  ").append(o.optString("p").take(if (engine.svc.id == "love") 500 else 250)).append("\n  ")
+                        .append(o.optString("r").take(if (engine.svc.id == "love") 700 else 1200)).append("\n")
                 }
             }
             sb.append("\n=== Журнал (последние 60) ===\n").append(engine.logs.takeLast(60).joinToString("\n"))
