@@ -398,7 +398,8 @@ val SERVICES = listOf(
         "love", "Love.ru", "https://love.ru/znakomstva/female/18-33/",
         listOf("https://love.ru", "https://www.love.ru", "https://m.love.ru"), "love.ru", "liker_love", "_love",
         listOf("https://love.ru/", "https://www.love.ru/", "https://m.love.ru/"), ".love.ru",
-        "", "POST", "", "", "GET", "",
+        // адреса для Love.ru только для проверки настроек: сами запросы шлёт страница сайта, мы жмём её кнопку «Симпатия»
+        "/search/?action=sympathy-send&login_to={login}", "POST", "", "/search/?action=load-more-users", "GET", "",
         40, LoveActivity::class.java, LoveKeepAliveService::class.java
     )
 )
