@@ -188,6 +188,7 @@ open class MainActivity : Activity() {
     private lateinit var tNext: TextView
     private lateinit var tRun: TextView
     private lateinit var toggleBtn: TextView
+    private lateinit var probeBtn: TextView
     private lateinit var autoSwitch: Switch
     private lateinit var repNumToday: TextView
     private lateinit var repNumHour: TextView
@@ -409,6 +410,21 @@ open class MainActivity : Activity() {
         st.addView(stErr, lp(MATCH, WRAP, t = 10))
         toggleBtn = pill("▶  Запустить", accent, Pal.WHITE, 0, 16f, 14) { onToggleClicked() }
         st.addView(toggleBtn, lp(MATCH, WRAP, t = 14))
+        st.addView(pill("🔄  Проверить лимит сейчас", tint(accent, 0x33), accent, accent, 13f, 10) { toast(engine.probeNow(true)); updateControl() }, lp(MATCH, WRAP, t = 8))
+        st.addView(pill("🔎  Проверить новые анкеты сейчас", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { toast(engine.recheckFeedNow()); updateControl() }, lp(MATCH, WRAP, t = 8))
+        probeBtn = pill("⏱  Проверка сброса лимита: ${engine.probeText()}", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) {
+            val nx = when (engine.probeMin()) {
+                10 -> 15
+                15 -> 30
+                30 -> 60
+                60 -> 0
+                else -> 10
+            }
+            prefs.edit().putInt("probeMin", nx).apply()
+            probeBtn.text = "⏱  Проверка сброса лимита: ${engine.probeText()}"
+            toast(if (nx == 0) "Проверка сброса выключена, жду расчётного времени" else "Пока лимит закрыт, раз в $nx мин пробую поставить лайк")
+        }
+        st.addView(probeBtn, lp(MATCH, WRAP, t = 8))
         st.addView(pill("📋  Скопировать диагностику (лимит, остаток, запросы)", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { copyDiag() }, lp(MATCH, WRAP, t = 8))
         col.addView(st, lp(MATCH, WRAP))
 

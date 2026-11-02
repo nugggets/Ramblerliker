@@ -24,6 +24,7 @@ open class KeepAliveService : Service() {
         // Команды из главного окна: у каждого сервиса своя служба в своём процессе
         const val ACT_START = "com.nugggets.ramblerliker.START"
         const val ACT_STOP = "com.nugggets.ramblerliker.STOP"
+        const val ACT_PROBE = "com.nugggets.ramblerliker.PROBE"
     }
 
     // Для Mamba служба в своём процессе (см. MambaKeepAliveService): свой движок, свои id уведомлений
@@ -79,6 +80,7 @@ open class KeepAliveService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACT_PROBE) engine.probeNow(true)
         return START_STICKY
     }
 
