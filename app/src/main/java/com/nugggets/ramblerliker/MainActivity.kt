@@ -158,6 +158,12 @@ open class MainActivity : Activity() {
     private lateinit var etRate: EditText
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
+    private lateinit var etMaxHour: EditText
+    private lateinit var etBreakEvery: EditText
+    private lateinit var etBreakMin: EditText
+    private lateinit var etDays: EditText
+    private lateinit var etMaxErr: EditText
+    private lateinit var etDayCap: EditText
     private lateinit var etLikeUrl: EditText
     private lateinit var logText: TextView
     private lateinit var logStats: TextView
@@ -436,6 +442,71 @@ open class MainActivity : Activity() {
         )
         tempo.addView(lbl("Настройки действуют сразу, перезапускать не нужно."), lp(MATCH, WRAP, t = 8))
         col.addView(tempo, lp(MATCH, WRAP, t = 12))
+
+        // --- дополнительные настройки ---
+        val ext = card()
+        ext.addView(tv("Дополнительные настройки", 16f, Pal.TEXT, true))
+        ext.addView(lbl("Лайков в час, не больше (0 = без ограничения)"), lp(MATCH, WRAP, t = 12))
+        etMaxHour = inp("0", prefs.getInt("maxHour", 0).toString(), true)
+        ext.addView(etMaxHour, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Дневной лимит приложения (0 = своего лимита нет, останавливает только сайт)"), lp(MATCH, WRAP, t = 14))
+        etDayCap = inp("0", prefs.getInt("dayCap", 0).toString(), true)
+        ext.addView(etDayCap, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Перерыв: после скольких лайков и на сколько минут (0 = без перерывов)"), lp(MATCH, WRAP, t = 14))
+        etBreakEvery = inp("лайков", prefs.getInt("breakEvery", 0).toString(), true)
+        etBreakMin = inp("минут", prefs.getInt("breakMin", 0).toString(), true)
+        val br = LinearLayout(this)
+        br.gravity = Gravity.CENTER_VERTICAL
+        br.addView(etBreakEvery, lp(0, WRAP, 1f))
+        br.addView(tv("→", 16f, Pal.MUTED), lp(WRAP, WRAP, l = 10, r = 10))
+        br.addView(etBreakMin, lp(0, WRAP, 1f))
+        ext.addView(br, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Дни недели работы по Москве: цифры 1–7, где 1 понедельник, 7 воскресенье (1234567 = каждый день)"), lp(MATCH, WRAP, t = 14))
+        etDays = inp("1234567", prefs.getString("days", "1234567") ?: "1234567", false)
+        ext.addView(etDays, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Ошибок подряд до паузы (по умолчанию 3)"), lp(MATCH, WRAP, t = 14))
+        etMaxErr = inp("3", prefs.getInt("maxErr", 3).toString(), true)
+        ext.addView(etMaxErr, lp(MATCH, WRAP, t = 6))
+        fun swRow(title: String, sub: String, key: String, def: Boolean) {
+            val row = LinearLayout(this)
+            row.gravity = Gravity.CENTER_VERTICAL
+            val tx = LinearLayout(this)
+            tx.orientation = LinearLayout.VERTICAL
+            tx.addView(tv(title, 14f, Pal.TEXT, true))
+            tx.addView(lbl(sub))
+            row.addView(tx, lp(0, WRAP, 1f))
+            val sw = Switch(this)
+            sw.isChecked = prefs.getBoolean(key, def)
+            sw.setOnCheckedChangeListener { _, on ->
+                prefs.edit().putBoolean(key, on).apply()
+                engine.logMsg("Настройка «$title»: " + if (on) "включена" else "выключена")
+            }
+            row.addView(sw, lp(WRAP, WRAP, l = 8))
+            ext.addView(row, lp(MATCH, WRAP, t = 14))
+        }
+        ext.addView(tv("Запуск", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Автозапуск лайков", "Сами стартуют при открытии приложения и после перезагрузки, пока не нажат «Стоп»", "wantRunning", engine.svc.id == "rambler")
+        swRow("Автовход", "Приложение само жмёт «Войти» и «Продолжить» на странице входа", "autoLogin", engine.svc.id == "rambler")
+        ext.addView(tv("Условия работы", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Только по Wi-Fi", "По мобильному интернету лайки ждут", "wifiOnly", false)
+        swRow("Только при зарядке", "Пока телефон не заряжается, лайки ждут", "chargingOnly", false)
+        swRow("Пауза при слабом заряде", "Ниже 15% без зарядки лайки ждут", "lowBat", false)
+        swRow("Перезапускать зависший цикл", "Если лайки встали больше чем на 5 минут, цикл запускается заново", "watchdog", true)
+        if (engine.svc.id == "love") swRow("Закрывать окна сайта", "Окна вроде «Сохраните доступ к своей анкете» закрываются перед каждым лайком", "loveClose", true)
+        ext.addView(tv("Уведомления", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Уведомления", "Главный выключатель всех уведомлений ниже", "alerts", true)
+        swRow("О лимите сайта", "Когда лайки у сайта закончились и когда сброс", "alertLimit", true)
+        swRow("О потере входа", "Когда нужно войти в аккаунт заново", "alertAuth", true)
+        ext.addView(tv("Журнал и экран", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Писать поиск анкет", "Строки «🔎 Поиск: позиции…» в журнале", "logSearch", true)
+        swRow("Писать итог за минуту", "Строки «❤ За минуту лайков…» в журнале", "logMinute", true)
+        swRow("Писать ответы сайта", "Первые ответы сайта на лайк после запуска, нужны для диагностики", "logReply", true)
+        swRow("Не гасить экран в «Браузере»", "Пока открыта вкладка «Браузер», экран остаётся включённым", "keepScreen", true)
+        ext.addView(
+            pill("Сохранить настройки", tint(accent, 0x33), accent, accent) { saveSettings() },
+            lp(MATCH, WRAP, t = 14)
+        )
+        col.addView(ext, lp(MATCH, WRAP, t = 12))
 
         // --- аккаунт и фон ---
         val acc = card()
@@ -892,7 +963,7 @@ open class MainActivity : Activity() {
         }
         if (i == 3) {
             // экран не гаснет только пока открыт браузер (вход, капча)
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (prefs.getBoolean("keepScreen", true)) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             if (!webLoaded) {
                 webLoaded = true
                 web.loadUrl(engine.svc.site)
@@ -1119,6 +1190,7 @@ open class MainActivity : Activity() {
             val sb = StringBuilder()
             sb.append("=== Диагностика ${engine.svc.title} v$verName ===\n")
             sb.append(engine.statusText()).append("\n")
+            sb.append("доп. настройки: в час ${prefs.getInt("maxHour", 0)}, дневной лимит ${prefs.getInt("dayCap", 0)}, перерыв ${prefs.getInt("breakEvery", 0)} лайков на ${prefs.getInt("breakMin", 0)} мин, дни ${prefs.getString("days", "1234567")}, ошибок подряд ${prefs.getInt("maxErr", 3)}, только Wi-Fi ${prefs.getBoolean("wifiOnly", false)}, уведомления ${prefs.getBoolean("alerts", true)}\n")
             sb.append("лимит приложения: ${prefs.getInt("limit", DEFAULT_LIMIT)}, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)}, темп ${engine.rateText()}\n")
             sb.append("адрес лайка: ${prefs.getString("likeUrl", engine.svc.defLikeUrl)} ${prefs.getString("likeBody", engine.svc.defLikeBody)}\n")
             sb.append("адрес ленты: ${prefs.getString("searchUrl", engine.svc.defSearchUrl)}\n")
@@ -1253,6 +1325,20 @@ open class MainActivity : Activity() {
         val (pa, pb) = engine.parseRate(etRate.text.toString())
         val wf = (etWinFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_FROM).coerceIn(0, 23)
         val wt = (etWinTo.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_TO).coerceIn(wf + 1, 24)
+        val mh = (etMaxHour.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 100000)
+        val dc = (etDayCap.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 100000)
+        val be = (etBreakEvery.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 100000)
+        val bm = (etBreakMin.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 720)
+        val me = (etMaxErr.text.toString().trim().toIntOrNull() ?: 3).coerceIn(1, 50)
+        val dy = etDays.text.toString().filter { it in '1'..'7' }.toSet().sorted().joinToString("").ifEmpty { "1234567" }
+        prefs.edit().putInt("maxHour", mh).putInt("dayCap", dc).putInt("breakEvery", be).putInt("breakMin", bm)
+            .putInt("maxErr", me).putString("days", dy).apply()
+        etMaxHour.setText(mh.toString())
+        etDayCap.setText(dc.toString())
+        etBreakEvery.setText(be.toString())
+        etBreakMin.setText(bm.toString())
+        etMaxErr.setText(me.toString())
+        etDays.setText(dy)
         prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
             .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su).apply()

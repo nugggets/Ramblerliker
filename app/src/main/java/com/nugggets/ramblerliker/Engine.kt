@@ -4,13 +4,17 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Handler
+import android.os.BatteryManager
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
@@ -173,7 +177,7 @@ const val LOVE_JS = """
    var c=document.querySelector('#sympathy_flow_btn_container');
    if(c&&String(c.className).indexOf('disabled')>=0&&(window.__lw||0)<25){ window.__lw=(window.__lw||0)+1; setTimeout(function(){ window.__lk.like(login,url,method,body); },200); return; }
    window.__lw=0;
-   closeWins();
+   if(window.__loveClose!==false) closeWins();
    var inf=info();
    pend={tok:login,name:inf.name,age:inf.age,city:inf.city,t:setTimeout(function(){ if(pend){ pend=null; Rec.apiErr('like','сайт не ответил на нажатие «Симпатия» за 15 с'); } },15000)};
    b.click();
@@ -647,7 +651,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private val maint = object : Runnable {
         override fun run() {
             try {
-                if (running && !waiting && nextAt > 0L && SystemClock.elapsedRealtime() - nextAt > 300000L) {
+                if (prefs.getBoolean("watchdog", true) && running && !waiting && nextAt > 0L && SystemClock.elapsedRealtime() - nextAt > 300000L) {
                     logMsg("⚠ Цикл завис, перезапускаю")
                     h.removeCallbacks(tick)
                     h.post(tick)
@@ -1259,6 +1263,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun notifyAlert(id: Int, title: String, text: String) {
+        if (!prefs.getBoolean("alerts", true)) return
+        if (id == 3 && !prefs.getBoolean("alertAuth", true)) return
+        if (id == 4 && !prefs.getBoolean("alertLimit", true)) return
         try {
             val nm = app.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(NotificationChannel("liker_alert", "Liker: важное", NotificationManager.IMPORTANCE_HIGH))
@@ -1411,6 +1418,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             nightLogged = false
             logMsg("☀ Окно работы открылось, продолжаю")
         }
+        if (!extraGate()) return
         val page = w()
         if (!pageReady) {
             if (SystemClock.elapsedRealtime() - loadStartedAt > 45000L) {
@@ -1462,6 +1470,80 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             sendLike(queue.removeFirst())
         }
     }
+
+    // ---------- дополнительные настройки: дни недели, Wi-Fi, лимиты, перерывы ----------
+    private var breakUntil = 0L
+    private var sinceBreak = 0
+    private var gateMsg = ""
+
+    private fun gateWait(msg: String, ms: Long): Boolean {
+        if (gateMsg != msg) {
+            gateMsg = msg
+            logMsg(msg)
+        }
+        nextAt = SystemClock.elapsedRealtime() + ms
+        h.postDelayed(tick, ms)
+        return false
+    }
+
+    private fun onWifi(): Boolean = try {
+        val cm = app.getSystemService(ConnectivityManager::class.java)
+        val nc = cm.getNetworkCapabilities(cm.activeNetwork)
+        nc != null && (nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || nc.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+    } catch (e: Exception) {
+        true
+    }
+
+    private fun batteryIntent(): Intent? = try {
+        app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun charging(): Boolean {
+        val st = batteryIntent()?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: return true
+        return st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
+    }
+
+    // заряд в процентах, -1 если не удалось узнать
+    private fun batteryPct(): Int {
+        val i = batteryIntent() ?: return -1
+        val l = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val s = i.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        return if (l < 0 || s <= 0) -1 else l * 100 / s
+    }
+
+    // true: можно ставить лайк. false: сработало ограничение, следующий шаг уже запланирован
+    private fun extraGate(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        val days = prefs.getString("days", "1234567") ?: "1234567"
+        val dow = Calendar.getInstance(mskTz).get(Calendar.DAY_OF_WEEK)
+        val d = if (dow == Calendar.SUNDAY) 7 else dow - 1
+        if (days.isNotEmpty() && !days.contains(d.toString())) return gateWait("📅 Сегодня не рабочий день по настройке «дни недели» ($days), жду", 300000L)
+        if (prefs.getBoolean("wifiOnly", false) && !onWifi()) return gateWait("📶 Включён режим «только Wi-Fi», а Wi-Fi нет, жду", 30000L)
+        if (prefs.getBoolean("chargingOnly", false) && !charging()) return gateWait("🔌 Включён режим «только при зарядке», а телефон не заряжается, жду", 30000L)
+        if (prefs.getBoolean("lowBat", false) && !charging() && batteryPct() in 0..14) return gateWait("🪫 Заряд ниже 15%, лайки на паузе до зарядки", 60000L)
+        val cap = prefs.getInt("dayCap", 0)
+        if (cap > 0 && prefs.getInt("count", 0) >= cap) return gateWait("🛑 Дневной лимит приложения $cap достигнут, жду нового дня", 300000L)
+        hourOk()
+        val mh = prefs.getInt("maxHour", 0)
+        if (mh > 0 && hourCount >= mh) {
+            val left = maxOf(3600000L - (now - hourStart), 1000L)
+            return gateWait("⏱ Лимит $mh лайков в час достигнут, жду нового часа", minOf(left, 60000L) + 500L)
+        }
+        val be = prefs.getInt("breakEvery", 0)
+        val bm = prefs.getInt("breakMin", 0)
+        if (breakUntil > now) return gateWait("☕ Идёт перерыв $bm мин, потом продолжу", minOf(breakUntil - now, 60000L) + 500L)
+        if (be > 0 && bm > 0 && sinceBreak >= be) {
+            sinceBreak = 0
+            breakUntil = now + bm * 60000L
+            return gateWait("☕ Идёт перерыв $bm мин, потом продолжу", minOf(bm * 60000L, 60000L) + 500L)
+        }
+        gateMsg = ""
+        return true
+    }
+
+    private fun maxErr(): Int = prefs.getInt("maxErr", 3).coerceIn(1, 50)
 
     // Только счётчик лайков «за этот час» для статуса (ограничения по часам нет)
     private fun hourOk() {
@@ -1545,7 +1627,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             likeSentAt = SystemClock.elapsedRealtime()
             h.postDelayed(wd, 20000)
             w().evaluateJavascript(
-                "if(window.__lk){window.__lk.like(${JSONObject.quote(login)}, '', '', '');}else{Rec.apiErr('notready-like', ${JSONObject.quote(login)});}", null
+                "window.__loveClose=${prefs.getBoolean("loveClose", true)};if(window.__lk){window.__lk.like(${JSONObject.quote(login)}, '', '', '');}else{Rec.apiErr('notready-like', ${JSONObject.quote(login)});}", null
             )
             return
         }
@@ -1904,7 +1986,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (seen.size > 30000) seen.clear()
             if (okMeta.size > 3000) okMeta.keys.retainAll(queue.toSet())
             // в журнал пишем не каждый пустой пролистанный блок
-            if (added > 0 || emptyStreak <= 2 || emptyStreak % 5 == 0) {
+            if (prefs.getBoolean("logSearch", true) && (added > 0 || emptyStreak <= 2 || emptyStreak % 5 == 0)) {
                 logMsg("🔎 Поиск: позиции $startOff–$offset, новых для лайка: $added, в очереди: ${queue.size}" +
                     (if (ok && j.has("remaining")) ", осталось у сайта: ${j.optInt("remaining", -1)}" else "") +
                     if (added == 0) " (все уже лайкнуты, листаю дальше)" else "")
@@ -1976,6 +2058,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 ed.apply()
                 sessLikes++
                 hourCount++
+                sinceBreak++
                 lastLikeAt = SystemClock.elapsedRealtime()
                 sessionGood = true
                 errLevel = 0
@@ -2017,12 +2100,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     val nowE = SystemClock.elapsedRealtime()
                     if (aggStart == 0L) aggStart = nowE
                     if (nowE - aggStart >= 60000L) {
-                        logMsg("❤ За минуту лайков: $aggCount. Сегодня $cnt/${limTxt()}, осталось у сайта: $left. Последний: $prof ($login)")
+                        if (prefs.getBoolean("logMinute", true)) logMsg("❤ За минуту лайков: $aggCount. Сегодня $cnt/${limTxt()}, осталось у сайта: $left. Последний: $prof ($login)")
                         aggCount = 0
                         aggStart = nowE
                     }
                 }
-                if (sessLikes <= 3) logMsg("   ответ сайта: ${text.take(if (svc.id == "ok") 500 else 150)}")
+                if (sessLikes <= 3 && prefs.getBoolean("logReply", true)) logMsg("   ответ сайта: ${text.take(if (svc.id == "ok") 500 else 150)}")
                 addReport(login)
                 profInfo.remove(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
@@ -2079,7 +2162,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         rowErr++
         lastError = msg
         logMsg("⚠ Ошибка (подряд $rowErr, всего $errors): $msg")
-        if (rowErr >= 3) {
+        if (rowErr >= maxErr()) {
             errorPause(msg)
             return
         }
