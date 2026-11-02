@@ -1146,6 +1146,7 @@ open class MainActivity : Activity() {
                     o.put("t", timeF.format(Date()))
                     rec.add(o)
                     if (rec.size > 300) rec.removeAt(0)
+                    scheduleRecPush()
                 }
             } catch (e: Exception) {
             }
@@ -1206,33 +1207,40 @@ open class MainActivity : Activity() {
     }
 
     // Всё нужное для разбора одним куском: статус, лимиты, настройки, последние запросы и ответы службы, запись из «Браузера», журнал
+    // Запись из «Браузера» для диагностики: клики и запросы самого сайта (у OK только запросы okdating и клики)
+    private fun recSection(maxN: Int, respN: Int, paramN: Int): String {
+        val netM = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
+        val ok = engine.svc.id == "ok"
+        val recs = if (!ok)
+            rec.filter { it.optString("m") == "CLICK" || (it.optString("m").uppercase() in netM && !it.optString("u").contains("mc.yandex") && !it.optString("u").contains("google")) }.takeLast(maxN)
+        else rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
+        if (ok && recs.isEmpty()) return ""
+        val sb = StringBuilder("=== Запись из «Браузера» ===\n")
+        for (o in recs) {
+            sb.append(o.optString("t")).append(" ").append(o.optString("m")).append(" ").append(o.optString("u").takeLast(60))
+                .append(" -> ").append(o.optInt("s")).append("\n  ").append(o.optString("p").take(if (ok) 250 else paramN)).append("\n  ")
+                .append(o.optString("r").take(if (ok) 1200 else respN)).append("\n")
+        }
+        return sb.toString()
+    }
+
+    private val recPush = Runnable {
+        try {
+            engine.recText = recSection(12, 500, 300)
+        } catch (e: Exception) {
+        }
+    }
+
+    // Запись браузера отдаём движку чуть позже, когда поток запросов затих: так она попадёт и в общую диагностику
+    private fun scheduleRecPush() {
+        window.decorView.removeCallbacks(recPush)
+        window.decorView.postDelayed(recPush, 1500)
+    }
+
     private fun copyDiag() {
         try {
-            val sb = StringBuilder()
-            sb.append("=== Диагностика ${engine.svc.title} v$verName ===\n")
-            sb.append(engine.statusText()).append("\n")
-            sb.append("доп. настройки: в час ${engine.ci("maxHour", 0)}, дневной лимит ${engine.ci("dayCap", 0)}, перерыв ${engine.ci("breakEvery", 0)} лайков на ${engine.ci("breakMin", 0)} мин, дни ${prefs.getString("days", "1234567")}, ошибок подряд ${engine.ci("maxErr", 3)}, только Wi-Fi ${prefs.getBoolean("wifiOnly", false)}, уведомления ${prefs.getBoolean("alerts", true)}\n")
-            sb.append("лимит приложения: ${prefs.getInt("limit", DEFAULT_LIMIT)}, окно ${engine.ci("winFrom", DEFAULT_WIN_FROM)}–${engine.ci("winTo", DEFAULT_WIN_TO)}, темп ${engine.rateText()}\n")
-            sb.append("адрес лайка: ${prefs.getString("likeUrl", engine.svc.defLikeUrl)} ${prefs.getString("likeBody", engine.svc.defLikeBody)}\n")
-            sb.append("адрес ленты: ${prefs.getString("searchUrl", engine.svc.defSearchUrl)}\n")
-            sb.append("\n=== Последний отказ сайта (сохраняется между перезапусками) ===\n").append(prefs.getString("lastLimitEvt", "ещё не было") ?: "ещё не было").append("\n")
-            sb.append("\n=== Запросы службы (последние) ===\n").append(engine.trace.takeLast(25).joinToString("\n")).append("\n")
-            // у Love.ru адреса ленты и лайка ещё неизвестны, поэтому в диагностику идут и сами запросы сайта (fetch/XHR), а не только клики
-            val netM = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
-            val recs = if (engine.svc.id != "ok")
-                rec.filter { it.optString("m") == "CLICK" || (it.optString("m").uppercase() in netM && !it.optString("u").contains("mc.yandex") && !it.optString("u").contains("google")) }.takeLast(24)
-            else rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
-            if (engine.svc.id != "ok" || recs.isNotEmpty()) {
-                sb.append("\n=== Запись из «Браузера» ===\n")
-                for (o in recs) {
-                    sb.append(o.optString("t")).append(" ").append(o.optString("m")).append(" ").append(o.optString("u").takeLast(60))
-                        .append(" -> ").append(o.optInt("s")).append("\n  ").append(o.optString("p").take(if (engine.svc.id != "ok") 500 else 250)).append("\n  ")
-                        .append(o.optString("r").take(if (engine.svc.id != "ok") 700 else 1200)).append("\n")
-                }
-            }
-            sb.append("\n=== Журнал (последние 60) ===\n").append(engine.logs.takeLast(60).joinToString("\n"))
             val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cb.setPrimaryClip(ClipData.newPlainText("diag", sb.toString()))
+            cb.setPrimaryClip(ClipData.newPlainText("diag", engine.diagText(recSection(24, 700, 500))))
             toast("Диагностика скопирована, вставь её мне в чат")
         } catch (e: Exception) {
             toast("Не получилось: ${e.message}")

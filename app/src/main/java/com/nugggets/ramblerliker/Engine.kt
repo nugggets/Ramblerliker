@@ -855,6 +855,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val tmp = File(statusFile.path + ".tmp")
             tmp.writeText(j.toString())
             tmp.renameTo(statusFile)
+            if (force || System.currentTimeMillis() - lastDiagAt > 60000L) writeDiagFile()
         } catch (e: Exception) {
         }
     }
@@ -870,6 +871,55 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     fun hourInfo(): String {
         if (!running) return "-"
         return "$hourCount за этот час, темп ${rateText()} в минуту"
+    }
+
+    // Запись из «Браузера» присылает окно сайта (там живёт список запросов); сюда она попадает в готовом виде
+    @Volatile
+    var recText: String = ""
+    private var lastDiagAt = 0L
+
+    fun verName(): String = try {
+        app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "?"
+    } catch (e: Exception) {
+        "?"
+    }
+
+    // Весь текст диагностики одного сайта. recOverride: запись браузера в нужном размере (иначе берётся сохранённая короткая)
+    fun diagText(recOverride: String? = null): String {
+        val sb = StringBuilder()
+        sb.append("=== Диагностика ${svc.title} v${verName()} ===\n")
+        sb.append(statusText()).append("\n")
+        sb.append("доп. настройки: в час ${ci("maxHour", 0)}, дневной лимит ${ci("dayCap", 0)}, перерыв ${ci("breakEvery", 0)} лайков на ${ci("breakMin", 0)} мин, дни ${cs("days", "1234567")}, ошибок подряд ${ci("maxErr", 3)}, только Wi-Fi ${cb("wifiOnly", false)}, уведомления ${prefs.getBoolean("alerts", true)}\n")
+        sb.append("паузы: после ошибок ${ci("errPauseMin", 0)} мин (0 = нарастающая), анкеты закончились ${ci("feedPauseMin", 45)} мин, после неудачного входа ${ci("authPauseMin", 30)} мин, проверка сброса лимита ${probeText()}\n")
+        sb.append("общие настройки: ${if (commonOn()) "ВКЛЮЧЕНЫ" else "выключены"}\n")
+        sb.append("лимит приложения: ${prefs.getInt("limit", DEFAULT_LIMIT)}, окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)}, темп ${rateText()}\n")
+        sb.append("адрес лайка: ${prefs.getString("likeUrl", svc.defLikeUrl)} ${prefs.getString("likeBody", svc.defLikeBody)}\n")
+        sb.append("адрес ленты: ${prefs.getString("searchUrl", svc.defSearchUrl)}\n")
+        sb.append("служебное: перезагрузок страницы Love $loveReloads (залипает: $loveSticky), ошибок подряд $rowErr, всего $errors, проверка лимита идёт: $probing\n")
+        sb.append("\n=== Последний отказ сайта (сохраняется между перезапусками) ===\n").append(prefs.getString("lastLimitEvt", "ещё не было") ?: "ещё не было").append("\n")
+        try {
+            sb.append("\n=== Запросы службы (последние) ===\n").append(trace.toList().takeLast(25).joinToString("\n")).append("\n")
+        } catch (e: Exception) {
+        }
+        val r = recOverride ?: recText
+        if (r.isNotEmpty()) sb.append("\n").append(r)
+        try {
+            sb.append("\n=== Журнал (последние 60) ===\n").append(logs.toList().takeLast(60).joinToString("\n"))
+        } catch (e: Exception) {
+        }
+        return sb.toString()
+    }
+
+    // Файл с диагностикой лежит в общей папке приложения: главный экран собирает «общую диагностику» из файлов всех сайтов
+    fun writeDiagFile() {
+        try {
+            val f = File(app.filesDir, "diag_${svc.id}.txt")
+            val tmp = File(f.path + ".tmp")
+            tmp.writeText(diagText())
+            tmp.renameTo(f)
+            lastDiagAt = System.currentTimeMillis()
+        } catch (e: Exception) {
+        }
     }
 
     fun statusText(): String =
