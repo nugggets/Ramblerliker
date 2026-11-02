@@ -153,12 +153,19 @@ const val LOVE_JS = """
     if(String(url).indexOf('sympathy-send')>=0){ p.then(function(r){ try{ r.clone().text().then(function(t){ done(String(b),r.status,t); }); }catch(e){} }).catch(function(){}); }
     return p; }; }
   var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open=function(m,u){ this.__lu=String(u||''); return xo.apply(this,arguments); };
+  XMLHttpRequest.prototype.open=function(m,u){ this.__lu=String(u||''); try{ var q=(this.__lu.match(/action=([\w-]+)/)||[])[1]; if(q){ (window.__lx=window.__lx||[]).push(q); if(window.__lx.length>8) window.__lx.shift(); } }catch(e){} return xo.apply(this,arguments); };
   XMLHttpRequest.prototype.send=function(b){ var x=this;
    if((x.__lu||'').indexOf('sympathy-send')>=0){ x.addEventListener('loadend',function(){ var t=''; try{t=x.responseText||'';}catch(e){} done(String(b||''),x.status,t); }); }
    return xs.apply(this,arguments); };
  }
- function closeWins(){ try{ var l=document.querySelectorAll('a.close_window'); for(var i=0;i<l.length;i++){ l[i].click(); } }catch(e){} }
+ function closeWins(){ try{ var l=document.querySelectorAll('a.close_window, .win_closeable a.top_back, .win_closable a.top_back'); for(var i=0;i<l.length;i++){ l[i].click(); } }catch(e){} }
+ function snap(){
+  try{
+   var c=document.querySelector('#sympathy_flow_btn_container'); var b=document.querySelector('#sympathy_btn_send'); var w=document.querySelectorAll('.win'); var wt='';
+   for(var i=0;i<w.length&&i<2;i++){ wt+=(w[i].id||'')+':'+String(w[i].innerText||w[i].textContent||'').replace(/\s+/g,' ').slice(0,50)+' | '; }
+   return 'контейнер: '+(c?c.className:'нет')+', кнопка: '+(b?(b.disabled?'выключена':'есть'):'нет')+', окон: '+w.length+' '+wt+'html: '+document.documentElement.className+', запросы: '+(window.__lx||[]).join(',');
+  }catch(e){ return 'снимок: '+e; }
+ }
  window.__lk.boot=function(){
   try{
    hook();
@@ -175,11 +182,13 @@ const val LOVE_JS = """
    if(!b){ Rec.apiErr('notready-like',login); return; }
    // пока сайт обрабатывает прошлую оценку, блок кнопки помечен «disabled» и нажатия игнорируются: ждём до 5 с
    var c=document.querySelector('#sympathy_flow_btn_container');
-   if(c&&String(c.className).indexOf('disabled')>=0&&(window.__lw||0)<25){ window.__lw=(window.__lw||0)+1; setTimeout(function(){ window.__lk.like(login,url,method,body); },200); return; }
+   if(c&&String(c.className).indexOf('disabled')>=0&&(window.__lw||0)<15){ window.__lw=(window.__lw||0)+1; setTimeout(function(){ window.__lk.like(login,url,method,body); },200); return; }
+   // 3 секунды кнопка так и не включилась: снимаем блокировку сами
+   if(c&&String(c.className).indexOf('disabled')>=0){ try{ c.classList.remove('disabled'); }catch(e){} }
    window.__lw=0;
    if(window.__loveClose!==false) closeWins();
    var inf=info();
-   pend={tok:login,name:inf.name,age:inf.age,city:inf.city,t:setTimeout(function(){ if(pend){ pend=null; Rec.apiErr('like','сайт не ответил на нажатие «Симпатия» за 15 с'); } },15000)};
+   pend={tok:login,name:inf.name,age:inf.age,city:inf.city,t:setTimeout(function(){ if(pend){ pend=null; Rec.apiErr('like','сайт не ответил на нажатие «Симпатия» за 15 с | '+snap()); } },15000)};
    b.click();
   }catch(e){ Rec.apiErr('like',String(e)); }
  };
@@ -187,6 +196,9 @@ const val LOVE_JS = """
 """
 
 // Для скрытой страницы Mamba: запоминаем заголовки, которые шлёт сам сайт (авторизация и т.п.), чтобы слать их же
+// прозрачный gif 1x1 для Love.ru
+val PIXEL_GIF: ByteArray = android.util.Base64.decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", android.util.Base64.DEFAULT)
+
 const val HDR_JS = """
 (function(){
  if(window.__hdrHook) return; window.__hdrHook=1;
@@ -549,8 +561,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val c = Calendar.getInstance(mskTz)
             c.timeInMillis = until
             val hh = c.get(Calendar.HOUR_OF_DAY)
-            val from = prefs.getInt("winFrom", DEFAULT_WIN_FROM)
-            val to = prefs.getInt("winTo", DEFAULT_WIN_TO)
+            val from = ci("winFrom", DEFAULT_WIN_FROM)
+            val to = ci("winTo", DEFAULT_WIN_TO)
             if (hh < from || hh >= to) {
                 val n = Calendar.getInstance(mskTz)
                 n.timeInMillis = until
@@ -775,7 +787,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (!running) return if (sessLikes > 0) "■ остановлен, лайков за сессию: $sessLikes" else "■ остановлен"
         if (siteLimitActive()) return "⏸ Лайки у сайта закончились. До сброса ${siteLimitLeftText()} (около ${siteLimitClock()})"
         if (limitWait && pauseUntil > SystemClock.elapsedRealtime()) return "⏸ лимит исчерпан, продолжу около $pauseClock"
-        if (nightLogged) return "🌙 вне окна ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК, сейчас ${mskNow()} МСК"
+        if (nightLogged) return "🌙 вне окна ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)} МСК, сейчас ${mskNow()} МСК"
         if (autoOn) return "🔑 вход слетел, захожу сам (попытка $authFails из 4)"
         if (rowErr > 0) return "⚠ ошибки подряд: $rowErr, ${lastError.take(60)}"
         if (lastLikeAt == 0L) return "… ждём первый лайк"
@@ -817,7 +829,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             j.put("errors", errors)
             j.put("rate", rateText())
             j.put("next", nextInfo())
-            j.put("win", "${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)}")
+            j.put("win", "${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)}")
             j.put("session", hasSession())
             val body = j.toString()
             if (!force && !running && body == lastStatus) return
@@ -866,9 +878,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // ---------- настройки темпа ----------
     private fun fmtNum(f: Float): String = if (f == f.toInt().toFloat()) f.toInt().toString() else f.toString()
 
-    fun rateMin(): Float = prefs.getFloat("rateMin", DEFAULT_RATE_MIN)
+    fun rateMin(): Float = cf("rateMin", DEFAULT_RATE_MIN)
 
-    fun rateMax(): Float = prefs.getFloat("rateMax", DEFAULT_RATE_MAX)
+    fun rateMax(): Float = cf("rateMax", DEFAULT_RATE_MAX)
 
     // «60-80» (или одно число, если границы равны)
     fun rateText(): String =
@@ -936,7 +948,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
         s.javaScriptCanOpenWindowsAutomatically = true
-        s.blockNetworkImage = true
+        s.blockNetworkImage = svc.id != "love"
         s.setGeolocationEnabled(true)
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
@@ -982,6 +994,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 val host = request?.url?.host ?: return null
                 if (BLOCK_HOSTS.any { host.contains(it) }) {
                     return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                }
+                if (svc.id == "love") {
+                    // Love.ru включает кнопку только после загрузки фото следующей анкеты. Настоящие фото не качаем (трафик),
+                    // а вместо них отдаём прозрачную точку 1x1: страница считает фото загруженным
+                    val p = request?.url?.path?.lowercase(Locale.ROOT) ?: ""
+                    val acc = request?.requestHeaders?.get("Accept") ?: ""
+                    if (p.endsWith(".jpg") || p.endsWith(".jpeg") || p.endsWith(".png") || p.endsWith(".webp") || acc.startsWith("image/")) {
+                        return WebResourceResponse("image/gif", null, java.io.ByteArrayInputStream(PIXEL_GIF))
+                    }
                 }
                 return null
             }
@@ -1322,7 +1343,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             limitWait = true
             pauseUntil = SystemClock.elapsedRealtime() + siteLimitLeftMs()
         }
-        logMsg("▶ Старт. Своего лимита нет (останавливает только лимит сайта), темп ${rateText()} лайков в минуту, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
+        logMsg("▶ Старт. Своего лимита нет (останавливает только лимит сайта), темп ${rateText()} лайков в минуту, окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         offset = resumeOffset()
         prefs.edit().putBoolean("wantRunning", true).apply()
         try {
@@ -1419,8 +1440,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             return
         }
         val hour = Calendar.getInstance(mskTz).get(Calendar.HOUR_OF_DAY)
-        val wf = prefs.getInt("winFrom", DEFAULT_WIN_FROM)
-        val wt = prefs.getInt("winTo", DEFAULT_WIN_TO)
+        val wf = ci("winFrom", DEFAULT_WIN_FROM)
+        val wt = ci("winTo", DEFAULT_WIN_TO)
         if (hour < wf || hour >= wt) {
             if (!nightLogged) {
                 nightLogged = true
@@ -1540,23 +1561,23 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // true: можно ставить лайк. false: сработало ограничение, следующий шаг уже запланирован
     private fun extraGate(): Boolean {
         val now = SystemClock.elapsedRealtime()
-        val days = prefs.getString("days", "1234567") ?: "1234567"
+        val days = cs("days", "1234567")
         val dow = Calendar.getInstance(mskTz).get(Calendar.DAY_OF_WEEK)
         val d = if (dow == Calendar.SUNDAY) 7 else dow - 1
         if (days.isNotEmpty() && !days.contains(d.toString())) return gateWait("📅 Сегодня не рабочий день по настройке «дни недели» ($days), жду", 300000L)
-        if (prefs.getBoolean("wifiOnly", false) && !onWifi()) return gateWait("📶 Включён режим «только Wi-Fi», а Wi-Fi нет, жду", 30000L)
+        if (cb("wifiOnly", false) && !onWifi()) return gateWait("📶 Включён режим «только Wi-Fi», а Wi-Fi нет, жду", 30000L)
         if (prefs.getBoolean("chargingOnly", false) && !charging()) return gateWait("🔌 Включён режим «только при зарядке», а телефон не заряжается, жду", 30000L)
         if (prefs.getBoolean("lowBat", false) && !charging() && batteryPct() in 0..14) return gateWait("🪫 Заряд ниже 15%, лайки на паузе до зарядки", 60000L)
-        val cap = prefs.getInt("dayCap", 0)
+        val cap = ci("dayCap", 0)
         if (cap > 0 && prefs.getInt("count", 0) >= cap) return gateWait("🛑 Дневной лимит приложения $cap достигнут, жду нового дня", 300000L)
         hourOk()
-        val mh = prefs.getInt("maxHour", 0)
+        val mh = ci("maxHour", 0)
         if (mh > 0 && hourCount >= mh) {
             val left = maxOf(3600000L - (now - hourStart), 1000L)
             return gateWait("⏱ Лимит $mh лайков в час достигнут, жду нового часа", minOf(left, 60000L) + 500L)
         }
-        val be = prefs.getInt("breakEvery", 0)
-        val bm = prefs.getInt("breakMin", 0)
+        val be = ci("breakEvery", 0)
+        val bm = ci("breakMin", 0)
         if (breakUntil > now) return gateWait("☕ Идёт перерыв $bm мин, потом продолжу", minOf(breakUntil - now, 60000L) + 500L)
         if (be > 0 && bm > 0 && sinceBreak >= be) {
             sinceBreak = 0
@@ -1567,7 +1588,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return true
     }
 
-    private fun maxErr(): Int = prefs.getInt("maxErr", 3).coerceIn(1, 50)
+    private fun maxErr(): Int = ci("maxErr", 3).coerceIn(1, 50)
 
     // Только счётчик лайков «за этот час» для статуса (ограничения по часам нет)
     private fun hourOk() {
@@ -1801,9 +1822,19 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             nextAt = SystemClock.elapsedRealtime() + 2000
             h.postDelayed(tick, 2000)
         } else {
+            if (svc.id == "love" && kind == "like") {
+                loveFail++
+                if (loveFail >= 2) {
+                    loveFail = 0
+                    logMsg("↻ Love.ru: кнопка «Симпатия» два раза не ответила, перезагружаю страницу")
+                    loadSite()
+                }
+            }
             handleError("$kind: $msg")
         }
     }
+
+    private var loveFail = 0
 
     private fun mambaList(j: JSONObject): JSONArray? =
         j.optJSONObject("data")?.optJSONObject("photoRating")?.optJSONObject("queue")?.optJSONArray("photos")
@@ -1867,7 +1898,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     if (id.isNotEmpty() && seen.add(id)) queue.addLast(id)
                 }
                 loveMiss = 0
-                rowErr = 0
                 scheduleNext(quick = true)
                 return
             }
@@ -2040,7 +2070,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 seen.clear()
                 if (mamba) for (r in reports) seen.add(r.login) // у Mamba повторно ту же фото не лайкаем
                 hasMore = true
-                val d = 1800000L + rnd.nextInt(1800000)
+                val fp = ci("feedPauseMin", 45)
+                val d = (fp * 60000L * (0.67 + rnd.nextDouble() * 0.66)).toLong().coerceAtLeast(60000L)
                 logMsg("⏸ Анкеты в поиске закончились. Начну поиск заново через ${d / 60000} мин (фильтры можно поменять на сайте или нажми «Проверить новые анкеты»)")
                 feedWaitUntil = SystemClock.elapsedRealtime() + d
                 nextAt = SystemClock.elapsedRealtime() + d
@@ -2063,6 +2094,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val j = parseLike(text)
             val code = likeCode(j, text, status)
             if (code == 0) {
+                loveFail = 0
                 if (probing) probeSuccess()
                 if (svc.id == "love") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "love", "", j.optString("_city"))
                 if (svc.id == "tabor") {
@@ -2199,9 +2231,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun authPause(reason: String) {
         setAuto(false)
         authFails = 0
-        val d = 1800000L
-        logMsg("🔒 $reason. Повторю попытку через 30 мин (если нужен код из СМС — открой приложение и войди вручную)")
-        notifyAlert(3, "Нужен вход в аккаунт", "Открой приложение и войди. Повторная попытка через 30 мин")
+        val am = ci("authPauseMin", 30).coerceAtLeast(1)
+        val d = am * 60000L
+        logMsg("🔒 $reason. Повторю попытку через $am мин (если нужен код из СМС — открой приложение и войди вручную)")
+        notifyAlert(3, "Нужен вход в аккаунт", "Открой приложение и войди. Повторная попытка через $am мин")
         nextAt = SystemClock.elapsedRealtime() + d
         h.removeCallbacks(tick)
         h.postDelayed(errResume, d)
@@ -2211,7 +2244,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Серия ошибок (нет сети, сбой сайта): не останавливаемся, а ждём 5/10/20/30 минут и пробуем снова
     private fun errorPause(msg: String) {
         errLevel++
-        val min = minOf(30, 5 shl (errLevel - 1))
+        val fixed = ci("errPauseMin", 0)
+        val min = if (fixed > 0) fixed else minOf(30, 5 shl (errLevel - 1))
         rowErr = 0
         logMsg("⏸ Много ошибок подряд ($msg). Пауза $min мин, потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + min * 60000L
@@ -2311,7 +2345,14 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private var feedWaitUntil = 0L
     private val probeTimeout = Runnable { endProbe("сайт не ответил за 2 минуты") }
 
-    fun probeMin(): Int = prefs.getInt("probeMin", 30)
+    // Общие настройки: если они включены и значение там есть, берём его, иначе личное значение сайта
+    private fun commonOn(): Boolean = Common.on(app)
+    fun ci(key: String, def: Int): Int = Common.read(app).let { if (commonOn() && it.has(key)) it.optInt(key, def) else prefs.getInt(key, def) }
+    fun cf(key: String, def: Float): Float = Common.read(app).let { if (commonOn() && it.has(key)) it.optDouble(key, def.toDouble()).toFloat() else prefs.getFloat(key, def) }
+    fun cs(key: String, def: String): String = Common.read(app).let { if (commonOn() && it.has(key)) it.optString(key, def) else (prefs.getString(key, def) ?: def) }
+    fun cb(key: String, def: Boolean): Boolean = Common.read(app).let { if (commonOn() && it.has(key)) it.optBoolean(key, def) else prefs.getBoolean(key, def) }
+
+    fun probeMin(): Int = ci("probeMin", 30)
 
     fun probeText(): String = when (val m = probeMin()) {
         0 -> "выключена"
@@ -2322,7 +2363,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     private fun inWorkWindow(): Boolean {
         val hour = Calendar.getInstance(mskTz).get(Calendar.HOUR_OF_DAY)
-        return hour >= prefs.getInt("winFrom", DEFAULT_WIN_FROM) && hour < prefs.getInt("winTo", DEFAULT_WIN_TO)
+        return hour >= ci("winFrom", DEFAULT_WIN_FROM) && hour < ci("winTo", DEFAULT_WIN_TO)
     }
 
     // Возвращает текст для всплывающей подсказки

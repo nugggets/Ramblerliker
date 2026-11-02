@@ -96,6 +96,7 @@ class HubActivity : Activity() {
         btns.addView(pill("■  Остановить все", tint(Pal.ERR, 0x22), Pal.ERR) { stopAll() }, lp(0, WRAP, 1f))
         sum.addView(btns, lp(MATCH, WRAP, t = 14))
         sum.addView(pill("🔄  Проверить лимиты у всех", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { probeAll() }, lp(MATCH, WRAP, t = 8))
+        sum.addView(pill("⚙  Общие настройки (темп, окно, паузы)", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { startActivity(Intent(this, CommonSettingsActivity::class.java)) }, lp(MATCH, WRAP, t = 8))
         col.addView(sum, lp(MATCH, WRAP))
 
         // --- предупреждение про батарею ---

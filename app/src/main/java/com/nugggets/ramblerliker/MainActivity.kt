@@ -413,6 +413,10 @@ open class MainActivity : Activity() {
         st.addView(pill("🔄  Проверить лимит сейчас", tint(accent, 0x33), accent, accent, 13f, 10) { toast(engine.probeNow(true)); updateControl() }, lp(MATCH, WRAP, t = 8))
         st.addView(pill("🔎  Проверить новые анкеты сейчас", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { toast(engine.recheckFeedNow()); updateControl() }, lp(MATCH, WRAP, t = 8))
         probeBtn = pill("⏱  Проверка сброса лимита: ${engine.probeText()}", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) {
+            if (Common.on(this@MainActivity)) {
+                toast("Включены общие настройки: интервал проверки меняется в них (главный экран, «Общие настройки»)")
+                return@pill
+            }
             val nx = when (engine.probeMin()) {
                 10 -> 15
                 15 -> 30
@@ -431,6 +435,7 @@ open class MainActivity : Activity() {
         // --- темп и лимит ---
         val tempo = card()
         tempo.addView(tv("Темп", 16f, Pal.TEXT, true))
+        if (Common.on(this)) tempo.addView(lbl("Включены общие настройки: темп, окно, дни, перерывы и паузы берутся из них (главный экран, «Общие настройки»). Значения ниже сейчас не действуют."), lp(MATCH, WRAP, t = 8))
         // своего лимита нет: останавливает только лимит сайта. Поле оставлено скрытым, чтобы не ломать сохранение
         etLimit = inp("0", "0", true)
         val lr = LinearLayout(this)
@@ -1206,8 +1211,8 @@ open class MainActivity : Activity() {
             val sb = StringBuilder()
             sb.append("=== Диагностика ${engine.svc.title} v$verName ===\n")
             sb.append(engine.statusText()).append("\n")
-            sb.append("доп. настройки: в час ${prefs.getInt("maxHour", 0)}, дневной лимит ${prefs.getInt("dayCap", 0)}, перерыв ${prefs.getInt("breakEvery", 0)} лайков на ${prefs.getInt("breakMin", 0)} мин, дни ${prefs.getString("days", "1234567")}, ошибок подряд ${prefs.getInt("maxErr", 3)}, только Wi-Fi ${prefs.getBoolean("wifiOnly", false)}, уведомления ${prefs.getBoolean("alerts", true)}\n")
-            sb.append("лимит приложения: ${prefs.getInt("limit", DEFAULT_LIMIT)}, окно ${prefs.getInt("winFrom", DEFAULT_WIN_FROM)}–${prefs.getInt("winTo", DEFAULT_WIN_TO)}, темп ${engine.rateText()}\n")
+            sb.append("доп. настройки: в час ${engine.ci("maxHour", 0)}, дневной лимит ${engine.ci("dayCap", 0)}, перерыв ${engine.ci("breakEvery", 0)} лайков на ${engine.ci("breakMin", 0)} мин, дни ${prefs.getString("days", "1234567")}, ошибок подряд ${engine.ci("maxErr", 3)}, только Wi-Fi ${prefs.getBoolean("wifiOnly", false)}, уведомления ${prefs.getBoolean("alerts", true)}\n")
+            sb.append("лимит приложения: ${prefs.getInt("limit", DEFAULT_LIMIT)}, окно ${engine.ci("winFrom", DEFAULT_WIN_FROM)}–${engine.ci("winTo", DEFAULT_WIN_TO)}, темп ${engine.rateText()}\n")
             sb.append("адрес лайка: ${prefs.getString("likeUrl", engine.svc.defLikeUrl)} ${prefs.getString("likeBody", engine.svc.defLikeBody)}\n")
             sb.append("адрес ленты: ${prefs.getString("searchUrl", engine.svc.defSearchUrl)}\n")
             sb.append("\n=== Последний отказ сайта (сохраняется между перезапусками) ===\n").append(prefs.getString("lastLimitEvt", "ещё не было") ?: "ещё не было").append("\n")
