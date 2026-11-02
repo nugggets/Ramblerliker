@@ -1835,6 +1835,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private var loveFail = 0
+    private var scanTotal = 0
+    private var scanLiked = 0
+    private var scanDup = 0
+    private var scanAdded = 0
 
     private fun mambaList(j: JSONObject): JSONArray? =
         j.optJSONObject("data")?.optJSONObject("photoRating")?.optJSONObject("queue")?.optJSONArray("photos")
@@ -2011,11 +2015,16 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     logMsg("🔎 Поля анкеты: ${keys.joinToString(", ")}")
                 }
                 val already = !mamba && o.optInt("own_like", 0) != 0
-                if (!already && seen.add(lg)) {
+                scanTotal++
+                if (already) scanLiked++
+                val fresh = !already && seen.add(lg)
+                if (!already && !fresh) scanDup++
+                if (fresh) {
                     queue.addLast(lg)
                     if (ok) okMeta[lg] = o.optJSONObject("extra")?.optString("meta") ?: ""
                     profInfo[lg] = if (mamba) Prof("фото $lg", "", "", "", "") else if (ok) okProf(o) else profileInfo(o)
                     added++
+                    scanAdded++
                 }
             }
             val startOff = offset
@@ -2070,6 +2079,23 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 seen.clear()
                 if (mamba) for (r in reports) seen.add(r.login) // у Mamba повторно ту же фото не лайкаем
                 hasMore = true
+                // чтобы понять, почему лента «закончилась», пишем итог прохода и поля ответа сайта (вдруг там есть общее число анкет)
+                val extra = StringBuilder()
+                try {
+                    val kk = j.keys()
+                    while (kk.hasNext()) {
+                        val k = kk.next()
+                        val v = j.opt(k)
+                        if (extra.isNotEmpty()) extra.append(", ")
+                        extra.append(if (v is JSONArray) "$k[${v.length()}]" else if (v is JSONObject) "$k{...}" else "$k=${v.toString().take(40)}")
+                    }
+                } catch (e: Exception) {
+                }
+                logMsg("📊 Итог прохода по поиску: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded. Поля ответа сайта: $extra")
+                scanTotal = 0
+                scanLiked = 0
+                scanDup = 0
+                scanAdded = 0
                 val fp = ci("feedPauseMin", 45)
                 val d = (fp * 60000L * (0.67 + rnd.nextDouble() * 0.66)).toLong().coerceAtLeast(60000L)
                 logMsg("⏸ Анкеты в поиске закончились. Начну поиск заново через ${d / 60000} мин (фильтры можно поменять на сайте или нажми «Проверить новые анкеты»)")
