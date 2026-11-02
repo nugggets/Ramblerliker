@@ -130,6 +130,16 @@ fun apiJs(merge: Boolean): String = "window.__merge=" + merge + ";" + """
 const val LOVE_JS = """
 (function(){
  if(!window.__lk) return;
+ // скрытое окно не рисует кадры: скрипты страницы, ждущие requestAnimationFrame или видимость вкладки, зависают после первого лайка
+ try{
+  if(!window.__rafPoly){
+   window.__rafPoly=1;
+   window.requestAnimationFrame=function(cb){ return setTimeout(function(){ try{ cb(Date.now()); }catch(e){} },16); };
+   window.cancelAnimationFrame=function(id){ clearTimeout(id); };
+   try{ Object.defineProperty(document,'hidden',{get:function(){ return false; },configurable:true}); }catch(e){}
+   try{ Object.defineProperty(document,'visibilityState',{get:function(){ return 'visible'; },configurable:true}); }catch(e){}
+  }
+ }catch(e){}
  var pend=null, tok=0;
  function info(){
   var t=''; try{ var mn=document.querySelector('#main'); t=((mn&&(mn.innerText||mn.textContent))||'').replace(/\s+/g,' ').trim(); }catch(e){}
@@ -150,12 +160,12 @@ const val LOVE_JS = """
   if(oF){ window.fetch=function(i,init){
     var url=(typeof i==='string')?i:((i&&i.url)||''); var b=(init&&init.body)||'';
     var p=oF.apply(this,arguments);
-    if(String(url).indexOf('sympathy-send')>=0){ p.then(function(r){ try{ r.clone().text().then(function(t){ done(String(b),r.status,t); }); }catch(e){} }).catch(function(){}); }
+    if(String(url).indexOf('sympathy-send')>=0){ window.__sent=(window.__sent||0)+1; p.then(function(r){ try{ r.clone().text().then(function(t){ done(String(b),r.status,t); }); }catch(e){} }).catch(function(){}); }
     return p; }; }
   var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.open=function(m,u){ this.__lu=String(u||''); try{ var q=(this.__lu.match(/action=([\w-]+)/)||[])[1]; if(q){ (window.__lx=window.__lx||[]).push(q); if(window.__lx.length>8) window.__lx.shift(); } }catch(e){} return xo.apply(this,arguments); };
   XMLHttpRequest.prototype.send=function(b){ var x=this;
-   if((x.__lu||'').indexOf('sympathy-send')>=0){ x.addEventListener('loadend',function(){ var t=''; try{t=x.responseText||'';}catch(e){} done(String(b||''),x.status,t); }); }
+   if((x.__lu||'').indexOf('sympathy-send')>=0){ window.__sent=(window.__sent||0)+1; x.addEventListener('loadend',function(){ var t=''; try{t=x.responseText||'';}catch(e){} done(String(b||''),x.status,t); }); }
    return xs.apply(this,arguments); };
  }
  function closeWins(){ try{ var l=document.querySelectorAll('a.close_window, .win_closeable a.top_back, .win_closable a.top_back'); for(var i=0;i<l.length;i++){ l[i].click(); } }catch(e){} }
@@ -163,7 +173,9 @@ const val LOVE_JS = """
   try{
    var c=document.querySelector('#sympathy_flow_btn_container'); var b=document.querySelector('#sympathy_btn_send'); var w=document.querySelectorAll('.win'); var wt='';
    for(var i=0;i<w.length&&i<2;i++){ wt+=(w[i].id||'')+':'+String(w[i].innerText||w[i].textContent||'').replace(/\s+/g,' ').slice(0,50)+' | '; }
-   return 'контейнер: '+(c?c.className:'нет')+', кнопка: '+(b?(b.disabled?'выключена':'есть'):'нет')+', окон: '+w.length+' '+wt+'html: '+document.documentElement.className+', запросы: '+(window.__lx||[]).join(',');
+   var sy='', fn='';
+   try{ if(window.sympathy){ var pk=[], fk=[]; for(var k in window.sympathy){ var v=window.sympathy[k]; if(typeof v==='function'){ fk.push(k); continue; } pk.push(k+'='+(v===null?'null':(typeof v==='object'?'obj':String(v).slice(0,16)))); } sy=pk.slice(0,25).join(','); fn=fk.slice(0,30).join(','); } else { sy='нет объекта sympathy'; } }catch(e){ sy='sympathy: '+e; }
+   return 'контейнер: '+(c?c.className:'нет')+', кнопка: '+(b?(b.disabled?'выключена':'есть'):'нет')+', окон: '+w.length+' '+wt+'html: '+document.documentElement.className+', запросы: '+(window.__lx||[]).join(',')+', hidden: '+document.hidden+', поля sympathy: '+sy+', методы sympathy: '+fn;
   }catch(e){ return 'снимок: '+e; }
  }
  window.__lk.boot=function(){
@@ -189,7 +201,11 @@ const val LOVE_JS = """
    if(window.__loveClose!==false) closeWins();
    var inf=info();
    pend={tok:login,name:inf.name,age:inf.age,city:inf.city,t:setTimeout(function(){ if(pend){ pend=null; Rec.apiErr('like','сайт не ответил на нажатие «Симпатия» за 15 с | '+snap()); } },15000)};
+   var s0=window.__sent||0;
    b.click();
+   setTimeout(function(){
+    if(pend&&(window.__sent||0)===s0){ var pp=pend; pend=null; clearTimeout(pp.t); Rec.apiErr('clickignored',snap()); }
+   },3000);
   }catch(e){ Rec.apiErr('like',String(e)); }
  };
 })();
@@ -1810,6 +1826,17 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
+        if (kind == "clickignored" && svc.id == "love") {
+            // после первого лайка страница в скрытом окне «залипает» и не принимает нажатия: перезагружаем её, это не ошибка
+            loveSticky = true
+            loveReloads++
+            if (loveReloads == 1 || loveReloads % 25 == 0) logMsg("↻ Love.ru: страница не приняла нажатие (перезагрузок: $loveReloads), перезагружаю и жму снова. Состояние: ${msg.take(500)}")
+            loadSite()
+            nextAt = SystemClock.elapsedRealtime() + 2500
+            h.removeCallbacks(tick)
+            h.postDelayed(tick, 2500)
+            return
+        }
         if (kind.startsWith("notready")) {
             // страница ещё не готова: это не ошибка, пробуем снова через 2 с
             if (kind == "notready-like" && msg.isNotEmpty()) queue.addFirst(msg)
@@ -1835,6 +1862,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private var loveFail = 0
+    private var loveSticky = false
+    private var loveReloads = 0
     private var scanTotal = 0
     private var scanLiked = 0
     private var scanDup = 0
@@ -2121,6 +2150,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val code = likeCode(j, text, status)
             if (code == 0) {
                 loveFail = 0
+                // раз страница залипает после лайка, обновляем её сразу, пока она не успела проигнорировать следующее нажатие
+                if (svc.id == "love" && loveSticky) loadSite()
                 if (probing) probeSuccess()
                 if (svc.id == "love") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "love", "", j.optString("_city"))
                 if (svc.id == "tabor") {
