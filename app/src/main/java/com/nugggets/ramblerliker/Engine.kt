@@ -169,6 +169,10 @@ const val LOVE_JS = """
    hook();
    var b=document.querySelector('#sympathy_btn_send');
    if(!b){ Rec.apiErr('notready-like',login); return; }
+   // пока сайт обрабатывает прошлую оценку, блок кнопки помечен «disabled» и нажатия игнорируются: ждём до 5 с
+   var c=document.querySelector('#sympathy_flow_btn_container');
+   if(c&&String(c.className).indexOf('disabled')>=0&&(window.__lw||0)<25){ window.__lw=(window.__lw||0)+1; setTimeout(function(){ window.__lk.like(login,url,method,body); },200); return; }
+   window.__lw=0;
    closeWins();
    var inf=info();
    pend={tok:login,name:inf.name,age:inf.age,city:inf.city,t:setTimeout(function(){ if(pend){ pend=null; Rec.apiErr('like','сайт не ответил на нажатие «Симпатия» за 15 с'); } },15000)};
