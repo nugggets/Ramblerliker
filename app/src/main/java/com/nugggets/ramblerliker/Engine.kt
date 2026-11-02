@@ -400,7 +400,9 @@ val SERVICES = listOf(
         listOf("https://www.mamba.ru/", "https://mamba.ru/", "https://m.mamba.ru/"), ".mamba.ru",
         "/api/ratings/v2/voting/photos/{login}/like?_loc%5Blocale%5D=ru", "POST", "{\"voteSource\":1}",
         "/api/graphql/?_loc[locale]=ru", "POST", "",
-        10, MambaActivity::class.java, MambaKeepAliveService::class.java
+        10, MambaActivity::class.java, MambaKeepAliveService::class.java,
+        // Mamba: по диагностике сайт отказывает (limit_exceeded) ровно после 250 лайков за окно
+        siteLimit = 250
     ),
     // Табор: голосование «Симпатии». Первые анкеты берём со страницы, дальше каждая оценка возвращает следующую
     Svc(
@@ -896,6 +898,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         sb.append("адрес лайка: ${prefs.getString("likeUrl", svc.defLikeUrl)} ${prefs.getString("likeBody", svc.defLikeBody)}\n")
         sb.append("адрес ленты: ${prefs.getString("searchUrl", svc.defSearchUrl)}\n")
         sb.append("служебное: перезагрузок страницы Love $loveReloads (залипает: $loveSticky), ошибок подряд $rowErr, всего $errors, проверка лимита идёт: $probing\n")
+        if (svc.id == "love") sb.append("снимок залипшей страницы Love (первый случай): ${prefs.getString("lastStick", "ещё не было")}\n")
         sb.append("\n=== Последний отказ сайта (сохраняется между перезапусками) ===\n").append(prefs.getString("lastLimitEvt", "ещё не было") ?: "ещё не было").append("\n")
         try {
             sb.append("\n=== Запросы службы (последние) ===\n").append(trace.toList().takeLast(25).joinToString("\n")).append("\n")
@@ -1128,7 +1131,14 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
         @JavascriptInterface
         fun hdr(name: String) {
-            h.post { logMsg("🔑 Заголовки сайта перехвачены (первый: $name), будут добавляться к запросам") }
+            // у Love.ru страница перезагружается после каждого лайка: пишем про заголовки не чаще раза в 10 минут
+            h.post {
+                val n = SystemClock.elapsedRealtime()
+                if (hdrLogAt == 0L || n - hdrLogAt > 600000L) {
+                    hdrLogAt = n
+                    logMsg("🔑 Заголовки сайта перехвачены (первый: $name), будут добавляться к запросам")
+                }
+            }
         }
 
         @JavascriptInterface
@@ -1138,7 +1148,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
         @JavascriptInterface
         fun autoInfo(t: String) {
-            h.post { logMsg("🖱 Автовход: кнопки «Войти»/«Продолжить» не вижу. $t") }
+            h.post {
+                val n = SystemClock.elapsedRealtime()
+                if (autoInfoAt == 0L || n - autoInfoAt > 300000L) {
+                    autoInfoAt = n
+                    logMsg("🖱 Автовход: кнопки «Войти»/«Продолжить» не вижу. $t")
+                }
+            }
         }
 
         @JavascriptInterface
@@ -1499,6 +1515,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             pauseUntil = 0L
             likesLeft = -1
             logMsg("▶ Время сброса лимита сайта наступило. Продолжаю")
+            if (web != null) loadSite()
         }
         val limit = prefs.getInt("limit", DEFAULT_LIMIT)
         if (false && prefs.getInt("count", 0) >= limit) {
@@ -1880,6 +1897,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             // после первого лайка страница в скрытом окне «залипает» и не принимает нажатия: перезагружаем её, это не ошибка
             loveSticky = true
             loveReloads++
+            if (loveReloads == 1 || prefs.getString("lastStick", "").isNullOrEmpty()) prefs.edit().putString("lastStick", "${stamp()} ${msg.take(1500)}").apply()
             if (loveReloads == 1 || loveReloads % 25 == 0) logMsg("↻ Love.ru: страница не приняла нажатие (перезагрузок: $loveReloads), перезагружаю и жму снова. Состояние: ${msg.take(500)}")
             loadSite()
             nextAt = SystemClock.elapsedRealtime() + 2500
@@ -1911,6 +1929,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
     }
 
+    private var hdrLogAt = 0L
+    private var autoInfoAt = 0L
     private var loveFail = 0
     private var loveSticky = false
     private var loveReloads = 0
@@ -2282,7 +2302,14 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             } else if (code == 24) {
                 onAuthLost(login)
             } else {
-                handleError("errno=$code: ${text.take(100)}", text)
+                var shown = text.take(100)
+                if (svc.id == "tabor") {
+                    val m = j.optString("message", "").replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
+                    if (m.isNotEmpty()) shown = "Табор: «${m.take(300)}»"
+                }
+                handleError("errno=$code: $shown", text)
+                // Табор при лимите сначала шлёт короткую ошибку, а точное время сброса пишет только на странице: перечитываем её
+                if (svc.id == "tabor" && running && !siteLimitActive()) loadSite()
             }
         } catch (ex: Exception) {
             handleError("ответ лайка не разобран: ${text.take(100)}")
@@ -2318,6 +2345,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun handleError(msg: String, raw: String = "") {
+        if (probing && !(looksLikeLimit(msg) || looksLikeLimit(raw))) {
+            // во время проверки лимита любая ошибка сайта означает «пока нельзя»: в счётчик ошибок и в паузы это не идёт
+            endProbe("ошибка сайта: ${msg.take(150)}")
+            return
+        }
         if (likesLeft == 0 || looksLikeLimit(msg) || looksLikeLimit(raw)) {
             logMsg("⚠ $msg")
             siteLimitPause("Лайки у сайта закончились", if (raw.isNotEmpty()) raw else msg)
