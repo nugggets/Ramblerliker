@@ -117,6 +117,10 @@ fun apiJs(merge: Boolean): String = "window.__merge=" + merge + ";" + """
    ensure().then(function(){return F(url,opts(method,body))})
     .then(function(r){return r.text()}).then(function(t){Rec.apiBatch(t)}).catch(function(e){Rec.apiErr('batch',String(e))});
   },
+  limits:function(url,body){
+   ensure().then(function(){return F(url,opts('POST',body))})
+    .then(function(r){return r.text()}).then(function(t){Rec.apiLimits(t)}).catch(function(e){Rec.apiErr('limits',String(e))});
+  },
   like:function(login,url,method,body){
    ensure().then(function(){return F(url,opts(method,body))})
     .then(function(r){var st=r.status;return r.text().then(function(t){Rec.apiLike2(login,st,t)})}).catch(function(e){Rec.apiErr('like',String(e))});
@@ -175,7 +179,9 @@ const val LOVE_JS = """
    for(var i=0;i<w.length&&i<2;i++){ wt+=(w[i].id||'')+':'+String(w[i].innerText||w[i].textContent||'').replace(/\s+/g,' ').slice(0,50)+' | '; }
    var sy='', fn='';
    try{ if(window.sympathy){ var pk=[], fk=[]; for(var k in window.sympathy){ var v=window.sympathy[k]; if(typeof v==='function'){ fk.push(k); continue; } pk.push(k+'='+(v===null?'null':(typeof v==='object'?'obj':String(v).slice(0,16)))); } sy=pk.slice(0,25).join(','); fn=fk.slice(0,30).join(','); } else { sy='нет объекта sympathy'; } }catch(e){ sy='sympathy: '+e; }
-   return 'контейнер: '+(c?c.className:'нет')+', кнопка: '+(b?(b.disabled?'выключена':'есть'):'нет')+', окон: '+w.length+' '+wt+'html: '+document.documentElement.className+', запросы: '+(window.__lx||[]).join(',')+', hidden: '+document.hidden+', поля sympathy: '+sy+', методы sympathy: '+fn;
+   var src='';
+   try{ if(window.sympathy&&!window.__srcDumped){ window.__srcDumped=1; var nm=['sendButtonClick','sendSympathy','sympathySendSuccessful']; for(var q=0;q<nm.length;q++){ var fq=window.sympathy[nm[q]]; if(typeof fq==='function'){ src+=' || '+nm[q]+': '+String(fq).replace(/\s+/g,' ').slice(0,700); } } } }catch(e){}
+   return 'контейнер: '+(c?c.className:'нет')+', кнопка: '+(b?(b.disabled?'выключена':'есть'):'нет')+', окон: '+w.length+' '+wt+'html: '+document.documentElement.className+', запросы: '+(window.__lx||[]).join(',')+', hidden: '+document.hidden+', поля sympathy: '+sy+', методы sympathy: '+fn+src;
   }catch(e){ return 'снимок: '+e; }
  }
  window.__lk.boot=function(){
@@ -381,7 +387,9 @@ class Svc(
     // известный лимит лайков за окно (0 = пока не известен, узнаём по ответам сайта)
     val siteLimit: Int = 0,
     // учиться длине окна по ответам сайта (у сайтов, где окно известно точно, выключено)
-    val learnWin: Boolean = true
+    val learnWin: Boolean = true,
+    // лимит сбрасывается в полночь по Москве (календарные сутки), а не через N часов после первого лайка
+    val dailyReset: Boolean = false
 )
 
 val SERVICES = listOf(
@@ -425,7 +433,8 @@ val SERVICES = listOf(
         OK_API + "dating.like", "POST", "user_id={login}&meta={meta}",
         OK_API + "dating.getRecommendedUsers", "POST", "count=20",
         30, OkActivity::class.java, OkKeepAliveService::class.java,
-        12L * 3600000L // OK: по диагностике окно 12 часов (сброс = первый лайк окна + 12 ч)
+        12L * 3600000L, // OK: по диагностике окно 12 часов (сброс = первый лайк окна + 12 ч)
+        learnWin = false
     ),
     // Love.ru: пока только вход и запись из «Браузера». Адреса ленты и лайка неизвестны, их даст диагностика с сайта
     Svc(
@@ -434,7 +443,9 @@ val SERVICES = listOf(
         listOf("https://love.ru/", "https://www.love.ru/", "https://m.love.ru/"), ".love.ru",
         // адреса для Love.ru только для проверки настроек: сами запросы шлёт страница сайта, мы жмём её кнопку «Симпатия»
         "/search/?action=sympathy-send&login_to={login}", "POST", "", "/search/?action=load-more-users", "GET", "",
-        40, LoveActivity::class.java, LoveKeepAliveService::class.java
+        40, LoveActivity::class.java, LoveKeepAliveService::class.java,
+        // Love.ru: по диагностике отказ «Превышен ежедневный лимит на отправку симпатий» пришёл после ~10000 лайков, после полуночи лайки пошли снова
+        siteLimit = 10000, learnWin = false, dailyReset = true
     )
 )
 
@@ -593,6 +604,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             }
             return t
         }
+        if (svc.dailyReset) return "Сброс: каждые сутки в 00:00 МСК (по диагностике, проверяется пробами)"
         val ws = prefs.getLong("winStartAt", 0L)
         return if (ws > 0L) "Сброс: примерно " + f.format(Date(ws + winMs)) + " МСК (окно $hrs ч от первого лайка в " + f.format(Date(ws)) + ")"
         else "Окно лимита: $hrs ч, отсчёт пойдёт с первого лайка"
@@ -725,6 +737,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (prefs.getInt("limitFix", 0) < 47) {
                 if (svc.id == "tabor" && u > 0L) prefs.edit().putLong("siteLimitUntil", minOf(u, 1793520810000L)).putBoolean("siteResetNamed", true).apply()
                 prefs.edit().putInt("limitFix", 47).apply()
+            }
+            // 0.63: у OK окно выучилось как 36 ч (по неточному началу окна), по диагностике оно 12 ч; для сайтов без обучения окна сбрасываем выученное
+            if (prefs.getInt("limitFix", 0) < 63) {
+                if (!svc.learnWin) prefs.edit().remove("siteWinMs").apply()
+                prefs.edit().putInt("limitFix", 63).apply()
             }
         } catch (e: Exception) {
         }
@@ -1098,6 +1115,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         @JavascriptInterface
         fun apiBatch(text: String) {
             h.post { onBatch(text) }
+        }
+
+        @JavascriptInterface
+        fun apiLimits(text: String) {
+            h.post { onMambaLimits(text) }
         }
 
         @JavascriptInterface
@@ -1488,6 +1510,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 return
             }
         }
+        rollWindowIfExpired()
         if (siteLimitActive() && !probing) {
             // проверка по расписанию: раз в N минут пробуем поставить один лайк, вдруг сайт сбросил лимит раньше
             val pm = probeMin()
@@ -1722,6 +1745,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun fetchBatch() {
+        if (svc.id == "mamba" && probing && !mambaLimChecked) {
+            // при проверке сначала спрашиваем у сайта, сколько лайков сделано и когда сброс (это не тратит лайк)
+            mambaLimChecked = true
+            mambaLimitsQuery()
+            return
+        }
         if (svc.id == "tabor" || svc.id == "love") {
             // у Табора списка нет: первые анкеты берём со страницы, дальше их присылает каждая оценка. Love.ru: страница сама ведёт ленту, мы жмём её кнопку
             waiting = true
@@ -1929,6 +1958,54 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
     }
 
+    // Mamba сама пишет в GraphQL, сколько лайков сделано и через сколько секунд лимит обновится: берём точное время сброса оттуда
+    private var mambaLimChecked = false
+    private val MAMBA_LIM_BODY = """{"operationName":"MyLimits","variables":{},"query":"query MyLimits { my { id encounters { voting { limits { dailyLimit numberOfVotesMade limitRenewalIn } } } } }"}"""
+
+    private fun mambaLimitsQuery() {
+        waiting = true
+        h.removeCallbacks(wd)
+        h.postDelayed(wd, 20000)
+        val surl = prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl
+        w().evaluateJavascript(
+            "if(window.__lk&&window.__lk.limits){window.__lk.limits(${JSONObject.quote(surl)}, ${JSONObject.quote(MAMBA_LIM_BODY)});}else{Rec.apiErr('notready-batch','');}", null
+        )
+    }
+
+    private fun onMambaLimits(text: String) {
+        h.removeCallbacks(wd)
+        waiting = false
+        if (!running) return
+        try {
+            val l = JSONObject(text).getJSONObject("data").getJSONObject("my").getJSONObject("encounters").getJSONObject("voting").getJSONObject("limits")
+            val daily = l.optInt("dailyLimit", 0)
+            val made = l.optInt("numberOfVotesMade", 0)
+            val renew = l.optLong("limitRenewalIn", 0L)
+            if (daily > 0) prefs.edit().putInt("siteMax", daily).putBoolean("siteMaxNamed", true).apply()
+            if (daily > 0 && made >= daily && renew > 0L) {
+                val until = System.currentTimeMillis() + renew * 1000L + 30000L
+                prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", true).apply()
+                pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
+                limitWait = true
+                logMsg("📊 Mamba: сайт сообщил лимит $made из $daily, сброс через ${renew / 60} мин (около ${siteLimitClock()})")
+                if (probing) {
+                    probing = false
+                    likesLeft = 0
+                    h.removeCallbacks(probeTimeout)
+                }
+                mambaLimChecked = false
+                h.removeCallbacks(tick)
+                h.post { if (running && !waiting) step() }
+                return
+            }
+            logMsg("📊 Mamba: сайт сообщил $made из $daily, лимит свободен")
+        } catch (e: Exception) {
+            logMsg("Mamba: ответ о лимитах не разобран: ${text.take(150)}")
+        }
+        if (probing) fetchBatch()
+    }
+
+    private var soft11 = 0
     private var hdrLogAt = 0L
     private var autoInfoAt = 0L
     private var loveFail = 0
@@ -2239,7 +2316,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     if (ow.isNotEmpty()) profInfo[login] = Prof("профиль $ow (фото $login)", "", "", "", "")
                 }
                 val ed = prefs.edit().putInt("count", prefs.getInt("count", 0) + 1).putInt("winCount", winCount() + 1)
-                if (prefs.getLong("winStartAt", 0L) == 0L) ed.putLong("winStartAt", System.currentTimeMillis())
+                if (prefs.getLong("winStartAt", 0L) == 0L) ed.putLong("winStartAt", if (svc.dailyReset) mskDayStart(System.currentTimeMillis()) else System.currentTimeMillis())
                 ed.apply()
                 sessLikes++
                 hourCount++
@@ -2302,10 +2379,23 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             } else if (code == 24) {
                 onAuthLost(login)
             } else {
+                if (svc.id == "rambler" && code == 11) {
+                    // по диагностике на такие анкеты сайт отвечает errno=11, но лайк из остатка списывает: это не авария, просто идём дальше
+                    soft11++
+                    if (soft11 == 1 || soft11 % 50 == 0) logMsg("ℹ Rambler: errno=11 для анкеты $login, пропускаю (не авария, всего таких: $soft11). Ответ: ${text.take(200)}")
+                    scheduleNext()
+                    return
+                }
                 var shown = text.take(100)
+                var tm = ""
                 if (svc.id == "tabor") {
-                    val m = j.optString("message", "").replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
-                    if (m.isNotEmpty()) shown = "Табор: «${m.take(300)}»"
+                    tm = j.optString("message", "").replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
+                    if (tm.isNotEmpty()) shown = "Табор: «${tm.take(300)}»"
+                }
+                if (svc.id == "tabor" && tm.contains("сможете проголосовать через")) {
+                    // Табор при лимите пишет в самом ответе, через сколько можно голосовать: берём время оттуда
+                    siteLimitPause("Лайки у сайта закончились", tm)
+                    return
                 }
                 handleError("errno=$code: $shown", text)
                 // Табор при лимите сначала шлёт короткую ошибку, а точное время сброса пишет только на странице: перечитываем её
@@ -2512,6 +2602,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (probing) return "Проверка уже идёт"
         if (!manual && !inWorkWindow()) return "Вне окна работы"
         probing = true
+        mambaLimChecked = false
         probeAuto = !manual
         probeBackup = prefs.getLong("siteLimitUntil", 0L)
         lastProbeAt = System.currentTimeMillis()
@@ -2575,7 +2666,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         // запоминаем, сколько лайков дал сайт до отказа
         val made = if (winCount() > 0) winCount() else prefs.getInt("count", 0)
         if (made > 0 && !prefs.getBoolean("siteMaxNamed", false) && svc.siteLimit == 0) prefs.edit().putInt("siteMax", made).apply()
-        val winStart = prefs.getLong("winStartAt", 0L)
+        var winStart = prefs.getLong("winStartAt", 0L)
+        // Love.ru: лимит суточный, сброс в полночь по Москве. В первые часы суток отказ считаем «пока не обновилось» и проверяем каждые 30 мин
+        if (svc.dailyReset && winStart == 0L && Calendar.getInstance(mskTz).get(Calendar.HOUR_OF_DAY) >= 3) {
+            winStart = mskDayStart(System.currentTimeMillis())
+            prefs.edit().putLong("winStartAt", winStart).apply()
+        }
         // сайт сам назвал сброс: запоминаем, какое у него окно (сброс минус первый лайк окна), дальше пригодится без ответа сайта
         if (fromSite != null && winStart > 0L) {
             val w = System.currentTimeMillis() + fromSite - winStart
@@ -2588,7 +2684,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         var until = System.currentTimeMillis() + dur + (if (fromSite != null) 30000L else 0L)
         if (wasProbe && fromSite == null && probeBackup > System.currentTimeMillis() + 60000L) until = probeBackup
         else if (!wasProbe) lastProbeAt = System.currentTimeMillis()
-        prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 47).apply()
+        prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 63).apply()
         limitWait = true
         pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
@@ -2618,6 +2714,29 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         h.postDelayed(tick, 60000L)
         writeStatus(true)
         onChange?.invoke()
+        // Mamba: сразу уточняем у сайта точное время сброса
+        if (svc.id == "mamba" && !wasProbe && fromSite == null) h.postDelayed({ if (running && !waiting && siteLimitActive()) mambaLimitsQuery() }, 800)
+    }
+
+    private fun mskDayStart(t: Long): Long {
+        val c = Calendar.getInstance(mskTz)
+        c.timeInMillis = t
+        c.set(Calendar.HOUR_OF_DAY, 0)
+        c.set(Calendar.MINUTE, 0)
+        c.set(Calendar.SECOND, 0)
+        c.set(Calendar.MILLISECOND, 0)
+        return c.timeInMillis
+    }
+
+    // Окно лимита по расчёту давно закончилось, а новый отказ не приходил: считаем окно заново с ближайшего лайка
+    private fun rollWindowIfExpired() {
+        val ws = prefs.getLong("winStartAt", 0L)
+        if (ws <= 0L || probing || siteLimitActive()) return
+        val winMs = prefs.getLong("siteWinMs", 0L).let { if (it > 0L) it else svc.limitWindowMs }
+        if (System.currentTimeMillis() > ws + winMs + 60000L) {
+            prefs.edit().putLong("winStartAt", 0L).putInt("winCount", 0).apply()
+            logMsg("↻ Окно лимита по расчёту закончилось, считаю лайки окна заново")
+        }
     }
 
     private fun scheduleNext(extraSec: Int = 0, quick: Boolean = false) {
