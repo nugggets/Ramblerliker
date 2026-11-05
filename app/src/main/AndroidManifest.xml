@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
@@ -62,6 +63,23 @@
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard" />
 
         <activity
+            android:name=".CommonSettingsActivity"
+            android:label="Общие настройки"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".LoveActivity"
+            android:process=":love"
+            android:label="Love.ru Liker"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard" />
+
+        <activity
             android:name=".OkActivity"
             android:process=":ok"
             android:label="OK Liker"
@@ -111,6 +129,17 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Постоянная работа автолайков Tabor в фоне" />
+        </service>
+
+        <service
+            android:name=".LoveKeepAliveService"
+            android:process=":love"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync|specialUse|location">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Постоянная работа автолайков Love.ru в фоне" />
         </service>
 
         <service

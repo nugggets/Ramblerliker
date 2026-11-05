@@ -145,6 +145,7 @@ open class MainActivity : Activity() {
     private lateinit var etLikeMethod: EditText
     private lateinit var etLikeBody: EditText
     private lateinit var etSearchUrl: EditText
+    private lateinit var etSearchExtra: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
     private var geoOrigin = ""
     private lateinit var web: WebView
@@ -158,6 +159,12 @@ open class MainActivity : Activity() {
     private lateinit var etRate: EditText
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
+    private lateinit var etMaxHour: EditText
+    private lateinit var etBreakEvery: EditText
+    private lateinit var etBreakMin: EditText
+    private lateinit var etDays: EditText
+    private lateinit var etMaxErr: EditText
+    private lateinit var etDayCap: EditText
     private lateinit var etLikeUrl: EditText
     private lateinit var logText: TextView
     private lateinit var logStats: TextView
@@ -172,6 +179,7 @@ open class MainActivity : Activity() {
     private lateinit var stCount: TextView
     private lateinit var stLimit: TextView
     private lateinit var stLeft: TextView
+    private lateinit var stReset: TextView
     private lateinit var stBar: BarView
     private lateinit var stErr: TextView
     private lateinit var tHour: TextView
@@ -181,6 +189,7 @@ open class MainActivity : Activity() {
     private lateinit var tNext: TextView
     private lateinit var tRun: TextView
     private lateinit var toggleBtn: TextView
+    private lateinit var probeBtn: TextView
     private lateinit var autoSwitch: Switch
     private lateinit var repNumToday: TextView
     private lateinit var repNumHour: TextView
@@ -385,6 +394,8 @@ open class MainActivity : Activity() {
         stBar = BarView(this)
         stBar.barColor = accent
         st.addView(stBar, lp(MATCH, dp(8), t = 6))
+        stReset = tv("", 13f, accent)
+        st.addView(stReset, lp(MATCH, WRAP, t = 8))
         val t1 = LinearLayout(this)
         tHour = tile(t1, "За час")
         tSess = tile(t1, "За сессию")
@@ -400,14 +411,36 @@ open class MainActivity : Activity() {
         st.addView(stErr, lp(MATCH, WRAP, t = 10))
         toggleBtn = pill("▶  Запустить", accent, Pal.WHITE, 0, 16f, 14) { onToggleClicked() }
         st.addView(toggleBtn, lp(MATCH, WRAP, t = 14))
+        st.addView(pill("🔄  Проверить лимит сейчас", tint(accent, 0x33), accent, accent, 13f, 10) { toast(engine.probeNow(true)); updateControl() }, lp(MATCH, WRAP, t = 8))
+        st.addView(pill("🔎  Проверить новые анкеты сейчас", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { toast(engine.recheckFeedNow()); updateControl() }, lp(MATCH, WRAP, t = 8))
+        probeBtn = pill("⏱  Проверка сброса лимита: ${engine.probeText()}", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) {
+            if (Common.on(this@MainActivity)) {
+                toast("Включены общие настройки: интервал проверки меняется в них (главный экран, «Общие настройки»)")
+                return@pill
+            }
+            val nx = when (engine.probeMin()) {
+                10 -> 15
+                15 -> 30
+                30 -> 60
+                60 -> 0
+                else -> 10
+            }
+            prefs.edit().putInt("probeMin", nx).apply()
+            probeBtn.text = "⏱  Проверка сброса лимита: ${engine.probeText()}"
+            toast(if (nx == 0) "Проверка сброса выключена, жду расчётного времени" else "Пока лимит закрыт, раз в $nx мин пробую поставить лайк")
+        }
+        st.addView(probeBtn, lp(MATCH, WRAP, t = 8))
+        st.addView(pill("📋  Скопировать диагностику (лимит, остаток, запросы)", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { copyDiag() }, lp(MATCH, WRAP, t = 8))
         col.addView(st, lp(MATCH, WRAP))
 
         // --- темп и лимит ---
         val tempo = card()
-        tempo.addView(tv("Темп и лимит", 16f, Pal.TEXT, true))
-        tempo.addView(lbl("Лимит лайков в сутки (максимум $MAX_LIMIT)"), lp(MATCH, WRAP, t = 12))
-        etLimit = inp("60", prefs.getInt("limit", DEFAULT_LIMIT).toString(), true)
+        tempo.addView(tv("Темп", 16f, Pal.TEXT, true))
+        if (Common.on(this)) tempo.addView(lbl("Включены общие настройки: темп, окно, дни, перерывы и паузы берутся из них (главный экран, «Общие настройки»). Значения ниже сейчас не действуют."), lp(MATCH, WRAP, t = 8))
+        // своего лимита нет: останавливает только лимит сайта. Поле оставлено скрытым, чтобы не ломать сохранение
+        etLimit = inp("0", "0", true)
         val lr = LinearLayout(this)
+        lr.visibility = View.GONE
         lr.gravity = Gravity.CENTER_VERTICAL
         lr.addView(pill("−10", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { stepLimit(-10) }, lp(dp(56), WRAP, r = 8))
         lr.addView(etLimit, lp(0, WRAP, 1f))
@@ -431,6 +464,71 @@ open class MainActivity : Activity() {
         )
         tempo.addView(lbl("Настройки действуют сразу, перезапускать не нужно."), lp(MATCH, WRAP, t = 8))
         col.addView(tempo, lp(MATCH, WRAP, t = 12))
+
+        // --- дополнительные настройки ---
+        val ext = card()
+        ext.addView(tv("Дополнительные настройки", 16f, Pal.TEXT, true))
+        ext.addView(lbl("Лайков в час, не больше (0 = без ограничения)"), lp(MATCH, WRAP, t = 12))
+        etMaxHour = inp("0", prefs.getInt("maxHour", 0).toString(), true)
+        ext.addView(etMaxHour, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Дневной лимит приложения (0 = своего лимита нет, останавливает только сайт)"), lp(MATCH, WRAP, t = 14))
+        etDayCap = inp("0", prefs.getInt("dayCap", 0).toString(), true)
+        ext.addView(etDayCap, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Перерыв: после скольких лайков и на сколько минут (0 = без перерывов)"), lp(MATCH, WRAP, t = 14))
+        etBreakEvery = inp("лайков", prefs.getInt("breakEvery", 0).toString(), true)
+        etBreakMin = inp("минут", prefs.getInt("breakMin", 0).toString(), true)
+        val br = LinearLayout(this)
+        br.gravity = Gravity.CENTER_VERTICAL
+        br.addView(etBreakEvery, lp(0, WRAP, 1f))
+        br.addView(tv("→", 16f, Pal.MUTED), lp(WRAP, WRAP, l = 10, r = 10))
+        br.addView(etBreakMin, lp(0, WRAP, 1f))
+        ext.addView(br, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Дни недели работы по Москве: цифры 1–7, где 1 понедельник, 7 воскресенье (1234567 = каждый день)"), lp(MATCH, WRAP, t = 14))
+        etDays = inp("1234567", prefs.getString("days", "1234567") ?: "1234567", false)
+        ext.addView(etDays, lp(MATCH, WRAP, t = 6))
+        ext.addView(lbl("Ошибок подряд до паузы (по умолчанию 3)"), lp(MATCH, WRAP, t = 14))
+        etMaxErr = inp("3", prefs.getInt("maxErr", 3).toString(), true)
+        ext.addView(etMaxErr, lp(MATCH, WRAP, t = 6))
+        fun swRow(title: String, sub: String, key: String, def: Boolean) {
+            val row = LinearLayout(this)
+            row.gravity = Gravity.CENTER_VERTICAL
+            val tx = LinearLayout(this)
+            tx.orientation = LinearLayout.VERTICAL
+            tx.addView(tv(title, 14f, Pal.TEXT, true))
+            tx.addView(lbl(sub))
+            row.addView(tx, lp(0, WRAP, 1f))
+            val sw = Switch(this)
+            sw.isChecked = prefs.getBoolean(key, def)
+            sw.setOnCheckedChangeListener { _, on ->
+                prefs.edit().putBoolean(key, on).apply()
+                engine.logMsg("Настройка «$title»: " + if (on) "включена" else "выключена")
+            }
+            row.addView(sw, lp(WRAP, WRAP, l = 8))
+            ext.addView(row, lp(MATCH, WRAP, t = 14))
+        }
+        ext.addView(tv("Запуск", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Автозапуск лайков", "Сами стартуют при открытии приложения и после перезагрузки, пока не нажат «Стоп»", "wantRunning", engine.svc.id == "rambler")
+        swRow("Автовход", "Приложение само жмёт «Войти» и «Продолжить» на странице входа", "autoLogin", engine.svc.id == "rambler")
+        ext.addView(tv("Условия работы", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Только по Wi-Fi", "По мобильному интернету лайки ждут", "wifiOnly", false)
+        swRow("Только при зарядке", "Пока телефон не заряжается, лайки ждут", "chargingOnly", false)
+        swRow("Пауза при слабом заряде", "Ниже 15% без зарядки лайки ждут", "lowBat", false)
+        swRow("Перезапускать зависший цикл", "Если лайки встали больше чем на 5 минут, цикл запускается заново", "watchdog", true)
+        if (engine.svc.id == "love") swRow("Закрывать окна сайта", "Окна вроде «Сохраните доступ к своей анкете» закрываются перед каждым лайком", "loveClose", true)
+        ext.addView(tv("Уведомления", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Уведомления", "Главный выключатель всех уведомлений ниже", "alerts", true)
+        swRow("О лимите сайта", "Когда лайки у сайта закончились и когда сброс", "alertLimit", true)
+        swRow("О потере входа", "Когда нужно войти в аккаунт заново", "alertAuth", true)
+        ext.addView(tv("Журнал и экран", 14f, accent, true), lp(MATCH, WRAP, t = 18))
+        swRow("Писать поиск анкет", "Строки «🔎 Поиск: позиции…» в журнале", "logSearch", true)
+        swRow("Писать итог за минуту", "Строки «❤ За минуту лайков…» в журнале", "logMinute", true)
+        swRow("Писать ответы сайта", "Первые ответы сайта на лайк после запуска, нужны для диагностики", "logReply", true)
+        swRow("Не гасить экран в «Браузере»", "Пока открыта вкладка «Браузер», экран остаётся включённым", "keepScreen", true)
+        ext.addView(
+            pill("Сохранить настройки", tint(accent, 0x33), accent, accent) { saveSettings() },
+            lp(MATCH, WRAP, t = 14)
+        )
+        col.addView(ext, lp(MATCH, WRAP, t = 12))
 
         // --- аккаунт и фон ---
         val acc = card()
@@ -475,6 +573,10 @@ open class MainActivity : Activity() {
         etLikeMethod = inp("GET или POST", prefs.getString("likeMethod", sv.defLikeMethod) ?: sv.defLikeMethod, false)
         etLikeBody = inp("тело запроса лайка (если есть)", prefs.getString("likeBody", sv.defLikeBody) ?: sv.defLikeBody, false)
         etSearchUrl = inp("URL поиска", prefs.getString("searchUrl", sv.defSearchUrl) ?: sv.defSearchUrl, false)
+        etSearchExtra = inp("доп. адреса поиска", prefs.getString("searchExtra", "") ?: "", false)
+        etSearchExtra.isSingleLine = false
+        etSearchExtra.minLines = 3
+        etSearchExtra.maxLines = 8
         body.addView(lbl("URL лайка ({login} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etLikeUrl, lp(MATCH, WRAP, t = 6))
         body.addView(lbl("Метод лайка"), lp(MATCH, WRAP, t = 12))
@@ -483,6 +585,10 @@ open class MainActivity : Activity() {
         body.addView(etLikeBody, lp(MATCH, WRAP, t = 6))
         body.addView(lbl("URL поиска ({offset} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etSearchUrl, lp(MATCH, WRAP, t = 6))
+        if (sv.id == "rambler") {
+            body.addView(lbl("Дополнительные адреса поиска, по одному в строке ({offset} обязателен). Когда основной список закончится, приложение пройдёт по ним, например по вкладкам сайта «Онлайн» и «Новые». Адреса видны в диагностике после того, как нажмёшь эти вкладки во вкладке «Браузер»."), lp(MATCH, WRAP, t = 12))
+            body.addView(etSearchExtra, lp(MATCH, WRAP, t = 6))
+        }
         body.addView(
             pill("URL лайка по умолчанию", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { etLikeUrl.setText(sv.defLikeUrl) },
             lp(MATCH, WRAP, t = 12)
@@ -505,6 +611,15 @@ open class MainActivity : Activity() {
                         "1) Вкладка «Браузер»: войди в ОК и открой знакомства. " +
                         "2) Поставь лимит 3 и жми «Запустить». В журнале должно появиться «OK: мини-приложение загружено, токен получен». " +
                         "3) Если адрес лайка окажется другим, поставь в «Браузере» один лайк вручную: приложение запомнит адрес само (строка «🔎 OK: запомнил адрес лайка»)."
+                ), lp(MATCH, WRAP, t = 14)
+            )
+        }
+        if (sv.id == "love") {
+            body.addView(
+                lbl(
+                    "Love.ru: приложение само жмёт кнопку «Симпатия» на странице сайта, как это делаете вы. " +
+                        "1) Вкладка «Браузер»: войди и открой знакомства (нужные город и возраст выбери там же). " +
+                        "2) Поставь лимит 3 и жми «Запустить». 3) Если в журнале «Love.ru: не вижу кнопку «Симпатия»», пришли эту строку целиком."
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
@@ -697,7 +812,7 @@ open class MainActivity : Activity() {
     // ---------- управление ----------
     private fun stepLimit(d: Int) {
         val cur = etLimit.text.toString().trim().toIntOrNull() ?: prefs.getInt("limit", DEFAULT_LIMIT)
-        etLimit.setText((cur + d).coerceIn(1, MAX_LIMIT).toString())
+        etLimit.setText((cur + d).coerceIn(0, MAX_LIMIT).toString())
     }
 
     private fun onToggleClicked() {
@@ -741,13 +856,20 @@ open class MainActivity : Activity() {
     private fun updateTop() {
         val st = engine.stateCode()
         barChip.setChip(stateLabel(st), stateColor(st))
-        barSub.setIf("v$verName  ·  сегодня ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}")
+        barSub.setIf("v$verName  ·  сегодня ${prefs.getInt("count", 0)}/${engine.limTxt()}")
     }
 
     private fun runTime(): String {
         if (!engine.running) return "-"
         val m = (SystemClock.elapsedRealtime() - engine.sessStart) / 60000
         return if (m >= 60) "${m / 60} ч ${m % 60} мин" else "$m мин"
+    }
+
+    // Лимит сайта (вверху справа) и время сброса с началом лайков (под полосой)
+    private fun showSiteLimit() {
+        val parts = engine.limitInfo().split("\n", limit = 2)
+        stLeft.setIf(parts[0].removePrefix("Лимит сайта: "))
+        stReset.setIf(if (parts.size > 1) parts[1] else "")
     }
 
     private fun updateControl() {
@@ -758,9 +880,9 @@ open class MainActivity : Activity() {
         val cnt = prefs.getInt("count", 0)
         val lim = prefs.getInt("limit", DEFAULT_LIMIT)
         stCount.setIf(cnt.toString())
-        stLimit.setIf(" / $lim")
-        stBar.frac = if (lim > 0) cnt.toFloat() / lim else 0f
-        stLeft.setIf(if (engine.likesLeft < 0) "" else "у сайта осталось: ${engine.likesLeft}")
+        stLimit.setIf(" / ${engine.limTxt()}")
+        stBar.frac = 0f
+        showSiteLimit()
         tHour.setIf(if (engine.running) engine.hourCount.toString() else "-")
         tSess.setIf(engine.sessLikes.toString())
         tQueue.setIf(engine.queue.size.toString())
@@ -845,7 +967,7 @@ open class MainActivity : Activity() {
         repNumHour.setIf(lastHour.toString())
         repNumSess.setIf(engine.sessLikes.toString())
         repMeta.setIf(
-            "Счётчик приложения: ${prefs.getInt("count", 0)}/${prefs.getInt("limit", DEFAULT_LIMIT)}  ·  " +
+            "Счётчик приложения: ${prefs.getInt("count", 0)}/${engine.limTxt()}  ·  " +
                 "темп ${engine.rateText()} в минуту  ·  ошибок за сессию: ${engine.errors}  ·  всего в отчёте: ${engine.reports.size}"
         )
         repHours.data = hours
@@ -871,7 +993,7 @@ open class MainActivity : Activity() {
         }
         if (i == 3) {
             // экран не гаснет только пока открыт браузер (вход, капча)
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (prefs.getBoolean("keepScreen", true)) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             if (!webLoaded) {
                 webLoaded = true
                 web.loadUrl(engine.svc.site)
@@ -1033,6 +1155,7 @@ open class MainActivity : Activity() {
                     o.put("t", timeF.format(Date()))
                     rec.add(o)
                     if (rec.size > 300) rec.removeAt(0)
+                    scheduleRecPush()
                 }
             } catch (e: Exception) {
             }
@@ -1090,6 +1213,47 @@ open class MainActivity : Activity() {
         engine.clearLogs()
         renderLog()
         toast("Журнал очищен")
+    }
+
+    // Всё нужное для разбора одним куском: статус, лимиты, настройки, последние запросы и ответы службы, запись из «Браузера», журнал
+    // Запись из «Браузера» для диагностики: клики и запросы самого сайта (у OK только запросы okdating и клики)
+    private fun recSection(maxN: Int, respN: Int, paramN: Int): String {
+        val netM = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
+        val ok = engine.svc.id == "ok"
+        val recs = if (!ok)
+            rec.filter { it.optString("m") == "CLICK" || (it.optString("m").uppercase() in netM && !it.optString("u").contains("mc.yandex") && !it.optString("u").contains("google")) }.takeLast(maxN)
+        else rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
+        if (ok && recs.isEmpty()) return ""
+        val sb = StringBuilder("=== Запись из «Браузера» ===\n")
+        for (o in recs) {
+            sb.append(o.optString("t")).append(" ").append(o.optString("m")).append(" ").append(o.optString("u").takeLast(160))
+                .append(" -> ").append(o.optInt("s")).append("\n  ").append(o.optString("p").take(if (ok) 250 else paramN)).append("\n  ")
+                .append(o.optString("r").take(if (ok) 1200 else respN)).append("\n")
+        }
+        return sb.toString()
+    }
+
+    private val recPush = Runnable {
+        try {
+            engine.recText = recSection(12, 500, 300)
+        } catch (e: Exception) {
+        }
+    }
+
+    // Запись браузера отдаём движку чуть позже, когда поток запросов затих: так она попадёт и в общую диагностику
+    private fun scheduleRecPush() {
+        window.decorView.removeCallbacks(recPush)
+        window.decorView.postDelayed(recPush, 1500)
+    }
+
+    private fun copyDiag() {
+        try {
+            val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cb.setPrimaryClip(ClipData.newPlainText("diag", engine.diagText(recSection(24, 700, 500))))
+            toast("Диагностика скопирована, вставь её мне в чат")
+        } catch (e: Exception) {
+            toast("Не получилось: ${e.message}")
+        }
     }
 
     private fun copySession() {
@@ -1183,7 +1347,7 @@ open class MainActivity : Activity() {
     }
 
     private fun saveSettings(notify: Boolean = true): Boolean {
-        val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
+        val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(0, MAX_LIMIT)
         val url = etLikeUrl.text.toString().trim().ifEmpty { engine.svc.defLikeUrl }
         val lm = etLikeMethod.text.toString().trim().uppercase().let { if (it == "GET" || it == "POST" || it == "PUT") it else engine.svc.defLikeMethod }
         val lb = etLikeBody.text.toString().trim()
@@ -1199,9 +1363,24 @@ open class MainActivity : Activity() {
         val (pa, pb) = engine.parseRate(etRate.text.toString())
         val wf = (etWinFrom.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_FROM).coerceIn(0, 23)
         val wt = (etWinTo.text.toString().trim().toIntOrNull() ?: DEFAULT_WIN_TO).coerceIn(wf + 1, 24)
+        val mh = (etMaxHour.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 100000)
+        val dc = (etDayCap.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 100000)
+        val be = (etBreakEvery.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 100000)
+        val bm = (etBreakMin.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 720)
+        val me = (etMaxErr.text.toString().trim().toIntOrNull() ?: 3).coerceIn(1, 50)
+        val dy = etDays.text.toString().filter { it in '1'..'7' }.toSet().sorted().joinToString("").ifEmpty { "1234567" }
+        prefs.edit().putInt("maxHour", mh).putInt("dayCap", dc).putInt("breakEvery", be).putInt("breakMin", bm)
+            .putInt("maxErr", me).putString("days", dy).apply()
+        etMaxHour.setText(mh.toString())
+        etDayCap.setText(dc.toString())
+        etBreakEvery.setText(be.toString())
+        etBreakMin.setText(bm.toString())
+        etMaxErr.setText(me.toString())
+        etDays.setText(dy)
         prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
-            .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su).apply()
+            .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su)
+            .putString("searchExtra", if (engine.svc.id == "rambler") etSearchExtra.text.toString().trim() else "").apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())

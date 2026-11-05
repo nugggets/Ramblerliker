@@ -24,6 +24,8 @@ open class KeepAliveService : Service() {
         // Команды из главного окна: у каждого сервиса своя служба в своём процессе
         const val ACT_START = "com.nugggets.ramblerliker.START"
         const val ACT_STOP = "com.nugggets.ramblerliker.STOP"
+        const val ACT_PROBE = "com.nugggets.ramblerliker.PROBE"
+        const val ACT_DIAG = "com.nugggets.ramblerliker.DIAG"
     }
 
     // Для Mamba служба в своём процессе (см. MambaKeepAliveService): свой движок, свои id уведомлений
@@ -63,6 +65,7 @@ open class KeepAliveService : Service() {
         } catch (e: Exception) {
             if (loc != 0) goForeground(n, engine.svc.nidOff + 1, 0) else throw e
         }
+        if (intent?.action == ACT_DIAG) engine.writeDiagFile()
         if (intent?.action == ACT_STOP) {
             engine.stopLikes("остановлено")
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -79,6 +82,7 @@ open class KeepAliveService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACT_PROBE) engine.probeNow(true)
         return START_STICKY
     }
 

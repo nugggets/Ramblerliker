@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  actions: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -27,7 +28,19 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "RamblerLiker-v$VER.apk"
           gh release delete "v$VER" --yes --cleanup-tag || true
           gh release create "v$VER" "RamblerLiker-v$VER.apk" --title "v$VER" --notes "build ${{ github.run_number }}"
+      # чтобы репозиторий не засорялся: оставляем 3 последних релиза (вместе с тегами) и 10 последних запусков сборки
+      - name: Clean old releases and runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 200 --json tagName --jq '.[3:][].tagName' | while read -r t; do
+            gh release delete "$t" --yes --cleanup-tag || true
+          done
+          gh run list --limit 300 --json databaseId --jq '.[10:][].databaseId' | while read -r id; do
+            gh run delete "$id" || true
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: RamblerLiker-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 3

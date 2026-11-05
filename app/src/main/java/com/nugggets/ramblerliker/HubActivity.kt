@@ -24,6 +24,7 @@ private class SvcCard(
     val sv: Svc,
     val chip: TextView,
     val verdict: TextView,
+    val site: TextView,
     val count: TextView,
     val rate: TextView,
     val bar: BarView,
@@ -72,7 +73,7 @@ class HubActivity : Activity() {
         val titles = LinearLayout(this)
         titles.orientation = LinearLayout.VERTICAL
         titles.addView(tv("Liker", 30f, Pal.TEXT, true))
-        titles.addView(tv("Rambler · Mamba · Tabor в одном приложении", 13f, Pal.MUTED))
+        titles.addView(tv("Rambler · Mamba · Tabor · OK · Love.ru в одном приложении", 13f, Pal.MUTED))
         head.addView(titles, lp(0, WRAP, 1f))
         head.addView(tv("v" + versionName(), 12f, Pal.MUTED))
         col.addView(head, lp(MATCH, WRAP, b = 16))
@@ -94,6 +95,9 @@ class HubActivity : Activity() {
         btns.addView(pill("▶  Запустить все", Pal.INFO, Pal.WHITE) { startAll() }, lp(0, WRAP, 1f, r = 8))
         btns.addView(pill("■  Остановить все", tint(Pal.ERR, 0x22), Pal.ERR) { stopAll() }, lp(0, WRAP, 1f))
         sum.addView(btns, lp(MATCH, WRAP, t = 14))
+        sum.addView(pill("🔄  Проверить лимиты у всех", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { probeAll() }, lp(MATCH, WRAP, t = 8))
+        sum.addView(pill("🩺  Общая диагностика (скопировать по всем сайтам)", tint(Pal.INFO, 0x33), Pal.INFO, Pal.INFO, 13f, 10) { copyAllDiag() }, lp(MATCH, WRAP, t = 8))
+        sum.addView(pill("⚙  Общие настройки (темп, окно, паузы)", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { startActivity(Intent(this, CommonSettingsActivity::class.java)) }, lp(MATCH, WRAP, t = 8))
         col.addView(sum, lp(MATCH, WRAP))
 
         // --- предупреждение про батарею ---
@@ -144,6 +148,8 @@ class HubActivity : Activity() {
         verdict.maxLines = 2
         verdict.ellipsize = TextUtils.TruncateAt.END
         c.addView(verdict, lp(MATCH, WRAP, t = 8))
+        val site = tv("", 14f, ac, true)
+        c.addView(site, lp(MATCH, WRAP, t = 8))
         val r2 = LinearLayout(this)
         r2.gravity = Gravity.BOTTOM
         val count = tv("0 / 0", 22f, Pal.TEXT, true)
@@ -166,7 +172,7 @@ class HubActivity : Activity() {
         r3.addView(open, lp(0, WRAP, 1f))
         c.addView(r3, lp(MATCH, WRAP, t = 12))
         c.setOnClickListener { openSvc(sv, 0) }
-        cards[sv.id] = SvcCard(sv, chipV, verdict, count, rate, bar, stats, hint, toggle)
+        cards[sv.id] = SvcCard(sv, chipV, verdict, site, count, rate, bar, stats, hint, toggle)
         return c
     }
 
@@ -195,9 +201,10 @@ class HubActivity : Activity() {
             if (s.exists) s.verdict
             else "Ещё не запускался. Нажми «Открыть», войди в аккаунт на вкладке «Браузер» и запусти."
         )
-        cd.count.setIf("$cnt / ${s.limit}")
+        cd.site.setIf(if (s.exists && s.site.isNotEmpty()) s.site else if (cd.sv.siteLimit > 0) "Лимит сайта: ${cd.sv.siteLimit} лайков за ${cd.sv.limitWindowMs / 3600000L} ч\nОкно считается от первого лайка" else "Лимит сайта: появится после первого запуска")
+        cd.count.setIf(if (s.limit <= 0 || s.limit >= MAX_LIMIT) "$cnt" else "$cnt / ${s.limit}")
         cd.rate.setIf("темп ${s.rate} в мин  ·  окно ${s.win} МСК")
-        cd.bar.frac = if (s.limit > 0) cnt.toFloat() / s.limit else 0f
+        cd.bar.frac = if (s.limit > 0 && s.limit < MAX_LIMIT) cnt.toFloat() / s.limit else 0f
         cd.stats.setIf("за час ${s.hour}  ·  за сессию ${s.sess}  ·  в очереди ${s.queue}  ·  ошибок ${s.errors}")
         val needLogin = s.exists && !s.running && !s.hasSession
         if (needLogin) {
@@ -277,6 +284,85 @@ class HubActivity : Activity() {
             startSvc(sv)
         }
         if (skipped.isNotEmpty()) toast("Нужен вход: $skipped")
+    }
+
+    // Просим каждый работающий сайт проверить, не сбросился ли у него лимит (пробуют поставить один лайк)
+    private fun probeAll() {
+        var n = 0
+        for (sv in SERVICES) {
+            val s = readStatus(this, sv)
+            if (s.running) {
+                sendCmd(sv, KeepAliveService.ACT_PROBE)
+                n++
+            }
+        }
+        toast(if (n == 0) "Нет запущенных сайтов" else "Проверяю лимиты: сайтов $n. Если лимит не исчерпан, ничего не изменится")
+    }
+
+    // Общая диагностика: просим работающие сайты записать свежий файл, через пару секунд склеиваем файлы всех сайтов в один текст
+    private fun copyAllDiag() {
+        var asked = 0
+        for (sv in SERVICES) {
+            if (readStatus(this, sv).running) {
+                try {
+                    startForegroundService(Intent(this, sv.keepCls).setAction(KeepAliveService.ACT_DIAG))
+                    asked++
+                } catch (e: Exception) {
+                }
+            }
+        }
+        toast("Собираю диагностику со всех сайтов…")
+        h.postDelayed({ buildAllDiag() }, if (asked > 0) 2500L else 100L)
+    }
+
+    private fun buildAllDiag() {
+        try {
+            val f = java.text.SimpleDateFormat("dd.MM HH:mm:ss", java.util.Locale("ru"))
+            f.timeZone = java.util.TimeZone.getTimeZone("Europe/Moscow")
+            val sb = StringBuilder()
+            sb.append("=== ОБЩАЯ ДИАГНОСТИКА Rambler Liker v${versionName()} ===\n")
+            sb.append("собрана ${f.format(java.util.Date())} МСК\n")
+            sb.append("телефон: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})\n")
+            try {
+                val bm = getSystemService(android.content.Context.BATTERY_SERVICE) as android.os.BatteryManager
+                val pm = getSystemService(PowerManager::class.java)
+                val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                val net = when {
+                    caps == null -> "нет сети"
+                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "мобильная"
+                    else -> "другая"
+                }
+                sb.append("батарея: ${bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)}%, без ограничений батареи: ${pm.isIgnoringBatteryOptimizations(packageName)}, сеть: $net\n")
+            } catch (e: Exception) {
+                sb.append("батарея и сеть: не удалось узнать (${e.message})\n")
+            }
+            val cj = Common.read(this)
+            sb.append("общие настройки: ${if (Common.on(this)) "ВКЛЮЧЕНЫ" else "выключены"} $cj\n")
+            sb.append("\n=== СВОДКА ===\n")
+            for (sv in SERVICES) {
+                val s = readStatus(this, sv)
+                sb.append("${sv.title}: ${if (!s.exists) "ещё не запускался" else if (s.running) "РАБОТАЕТ" else "остановлен"}")
+                if (s.exists) sb.append(", ${s.verdict}, лайков сегодня ${s.count}, за сессию ${s.sess}, ошибок ${s.errors}, следующее: ${s.next}")
+                sb.append("\n")
+            }
+            for (sv in SERVICES) {
+                val file = java.io.File(filesDir, "diag_${sv.id}.txt")
+                sb.append("\n\n############ ${sv.title} ############\n")
+                if (file.exists()) {
+                    sb.append("(данные на ${f.format(java.util.Date(file.lastModified()))} МСК)\n")
+                    sb.append(file.readText())
+                } else {
+                    sb.append("нет данных: сайт ещё не запускался\n")
+                }
+            }
+            val cb = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cb.setPrimaryClip(android.content.ClipData.newPlainText("diag", sb.toString()))
+            toast("Общая диагностика скопирована (${sb.length / 1000} тыс. символов), вставь её мне в чат")
+        } catch (e: Exception) {
+            toast("Не получилось: ${e.message}")
+        }
     }
 
     private fun stopAll() {

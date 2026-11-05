@@ -3,3 +3,17 @@ build/
 local.properties
 .idea/
 *.iml
+.kotlin/
+.cxx/
+captures/
+*.apk
+*.aab
+*.zip
+*.log
+*.tmp
+*.bak
+*.orig
+*.jks
+*.keystore
+!app/debug.keystore
+.DS_Store

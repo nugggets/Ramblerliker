@@ -41,6 +41,7 @@ fun svcColor(id: String): Int = when (id) {
     "mamba" -> 0xFFFF5FA2.toInt()
     "tabor" -> 0xFF2EC4B6.toInt()
     "ok" -> 0xFFEE8208.toInt()
+    "love" -> 0xFFE5484D.toInt()
     else -> 0xFF4C8DFF.toInt()
 }
 
@@ -254,7 +255,8 @@ class SvcStatus(
     val win: String,
     val hasSession: Boolean,
     val ts: Long,
-    val day: String
+    val day: String,
+    val site: String = ""
 )
 
 fun readStatus(ctx: Context, sv: Svc): SvcStatus {
@@ -278,7 +280,8 @@ fun readStatus(ctx: Context, sv: Svc): SvcStatus {
                 j.optString("win", "$DEFAULT_WIN_FROM–$DEFAULT_WIN_TO"),
                 j.optBoolean("session", false),
                 j.optLong("ts", 0L),
-                j.optString("day", "")
+                j.optString("day", ""),
+                j.optString("site", "")
             )
         }
     } catch (e: Exception) {

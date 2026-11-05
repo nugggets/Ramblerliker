@@ -19,6 +19,15 @@ class TaborKeepAliveService : KeepAliveService() {
     override val svcId: String = "tabor"
 }
 
+// Окно и служба Love.ru: отдельный процесс (:love)
+class LoveActivity : MainActivity() {
+    override fun serviceId(): String = "love"
+}
+
+class LoveKeepAliveService : KeepAliveService() {
+    override val svcId: String = "love"
+}
+
 // Окно и служба OK: отдельный процесс (:ok), работает одновременно с остальными сервисами
 class OkActivity : MainActivity() {
     override fun serviceId(): String = "ok"
