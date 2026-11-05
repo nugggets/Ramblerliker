@@ -1220,8 +1220,14 @@ open class MainActivity : Activity() {
     private fun recSection(maxN: Int, respN: Int, paramN: Int): String {
         val netM = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
         val ok = engine.svc.id == "ok"
+        // счётчики и реклама забивают запись и вытесняют нужные запросы сайта: выбрасываем их, у Rambler оставляем только запросы /api/
+        val noise = listOf("mc.yandex", "google", "kraken.rambler", "/cnt/", "analyticsSend", "top-fwz", "adriver", "doubleclick", "an.yandex")
+        val rambler = engine.svc.id == "rambler"
         val recs = if (!ok)
-            rec.filter { it.optString("m") == "CLICK" || (it.optString("m").uppercase() in netM && !it.optString("u").contains("mc.yandex") && !it.optString("u").contains("google")) }.takeLast(maxN)
+            rec.filter {
+                val u = it.optString("u")
+                it.optString("m") == "CLICK" || (it.optString("m").uppercase() in netM && noise.none { n -> u.contains(n) } && (!rambler || u.contains("/api/")))
+            }.takeLast(maxN)
         else rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
         if (ok && recs.isEmpty()) return ""
         val sb = StringBuilder("=== Запись из «Браузера» ===\n")
@@ -1235,7 +1241,7 @@ open class MainActivity : Activity() {
 
     private val recPush = Runnable {
         try {
-            engine.recText = recSection(12, 500, 300)
+            engine.recText = recSection(20, 500, 300)
         } catch (e: Exception) {
         }
     }
