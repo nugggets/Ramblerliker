@@ -1744,6 +1744,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return 0L
     }
 
+    private var searchIdx = 0
+
+    // Основной адрес поиска и дополнительные (по одному в строке): вкладки сайта вроде «Онлайн» и «Новые» отдают другие списки
+    private fun searchUrls(): List<String> {
+        val main = prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl
+        val extra = (prefs.getString("searchExtra", "") ?: "").lines().map { it.trim() }.filter { it.isNotEmpty() && it.contains("{offset}") }
+        return listOf(main) + extra
+    }
+
     private fun fetchBatch() {
         if (svc.id == "mamba" && probing && !mambaLimChecked) {
             // при проверке сначала спрашиваем у сайта, сколько лайков сделано и когда сброс (это не тратит лайк)
@@ -1763,7 +1772,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             return
         }
         val body = searchBody()
-        val surl = (prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl).replace("{offset}", offset.toString())
+        val urls = searchUrls()
+        val surl = urls[searchIdx % urls.size].replace("{offset}", offset.toString())
         val smeth = prefs.getString("searchMethod", svc.defSearchMethod) ?: svc.defSearchMethod
         val sbod = body.replace("{offset}", offset.toString())
         waiting = true
@@ -2005,6 +2015,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (probing) fetchBatch()
     }
 
+    private val ownDist = HashMap<Int, Int>()
+    private val ownSamples = ArrayList<String>()
+    private var sampleLogged = false
     private var soft11 = 0
     private var hdrLogAt = 0L
     private var autoInfoAt = 0L
@@ -2191,6 +2204,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     logMsg("🔎 Поля анкеты: ${keys.joinToString(", ")}")
                 }
                 val already = !mamba && o.optInt("own_like", 0) != 0
+                if (svc.id == "rambler") {
+                    val ol = o.optInt("own_like", 0)
+                    ownDist[ol] = (ownDist[ol] ?: 0) + 1
+                    if (ol != 0 && ownSamples.size < 3) ownSamples.add("$lg(own=$ol, usr=${o.optInt("usr_like", 0)}, dbl=${o.optInt("dbllike", 0)})")
+                    if (ol != 0 && !sampleLogged) {
+                        sampleLogged = true
+                        logMsg("🔎 Пример анкеты, которую приложение считает уже лайкнутой: ${o.toString().take(500)}")
+                    }
+                }
                 scanTotal++
                 if (already) scanLiked++
                 val fresh = !already && seen.add(lg)
@@ -2267,7 +2289,24 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     }
                 } catch (e: Exception) {
                 }
-                logMsg("📊 Итог прохода по поиску: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded. Поля ответа сайта: $extra")
+                val nUrls = searchUrls().size
+                logMsg("📊 Итог прохода по поиску ${searchIdx + 1} из $nUrls: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded. Поля ответа сайта: $extra" +
+                    (if (svc.id == "rambler") ". Значения own_like в списке: $ownDist, примеры «уже лайкнутых»: $ownSamples" else ""))
+                ownDist.clear()
+                ownSamples.clear()
+                if (nUrls > 1) {
+                    searchIdx++
+                    if (searchIdx < nUrls) {
+                        logMsg("➡ Перехожу к следующему адресу поиска (${searchIdx + 1} из $nUrls)")
+                        scanTotal = 0
+                        scanLiked = 0
+                        scanDup = 0
+                        scanAdded = 0
+                        scheduleNext(quick = true)
+                        return
+                    }
+                    searchIdx = 0
+                }
                 scanTotal = 0
                 scanLiked = 0
                 scanDup = 0

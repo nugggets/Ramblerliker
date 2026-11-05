@@ -145,6 +145,7 @@ open class MainActivity : Activity() {
     private lateinit var etLikeMethod: EditText
     private lateinit var etLikeBody: EditText
     private lateinit var etSearchUrl: EditText
+    private lateinit var etSearchExtra: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
     private var geoOrigin = ""
     private lateinit var web: WebView
@@ -572,6 +573,10 @@ open class MainActivity : Activity() {
         etLikeMethod = inp("GET или POST", prefs.getString("likeMethod", sv.defLikeMethod) ?: sv.defLikeMethod, false)
         etLikeBody = inp("тело запроса лайка (если есть)", prefs.getString("likeBody", sv.defLikeBody) ?: sv.defLikeBody, false)
         etSearchUrl = inp("URL поиска", prefs.getString("searchUrl", sv.defSearchUrl) ?: sv.defSearchUrl, false)
+        etSearchExtra = inp("доп. адреса поиска", prefs.getString("searchExtra", "") ?: "", false)
+        etSearchExtra.isSingleLine = false
+        etSearchExtra.minLines = 3
+        etSearchExtra.maxLines = 8
         body.addView(lbl("URL лайка ({login} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etLikeUrl, lp(MATCH, WRAP, t = 6))
         body.addView(lbl("Метод лайка"), lp(MATCH, WRAP, t = 12))
@@ -580,6 +585,10 @@ open class MainActivity : Activity() {
         body.addView(etLikeBody, lp(MATCH, WRAP, t = 6))
         body.addView(lbl("URL поиска ({offset} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etSearchUrl, lp(MATCH, WRAP, t = 6))
+        if (sv.id == "rambler") {
+            body.addView(lbl("Дополнительные адреса поиска, по одному в строке ({offset} обязателен). Когда основной список закончится, приложение пройдёт по ним, например по вкладкам сайта «Онлайн» и «Новые». Адреса видны в диагностике после того, как нажмёшь эти вкладки во вкладке «Браузер»."), lp(MATCH, WRAP, t = 12))
+            body.addView(etSearchExtra, lp(MATCH, WRAP, t = 6))
+        }
         body.addView(
             pill("URL лайка по умолчанию", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { etLikeUrl.setText(sv.defLikeUrl) },
             lp(MATCH, WRAP, t = 12)
@@ -1217,7 +1226,7 @@ open class MainActivity : Activity() {
         if (ok && recs.isEmpty()) return ""
         val sb = StringBuilder("=== Запись из «Браузера» ===\n")
         for (o in recs) {
-            sb.append(o.optString("t")).append(" ").append(o.optString("m")).append(" ").append(o.optString("u").takeLast(60))
+            sb.append(o.optString("t")).append(" ").append(o.optString("m")).append(" ").append(o.optString("u").takeLast(160))
                 .append(" -> ").append(o.optInt("s")).append("\n  ").append(o.optString("p").take(if (ok) 250 else paramN)).append("\n  ")
                 .append(o.optString("r").take(if (ok) 1200 else respN)).append("\n")
         }
@@ -1370,7 +1379,8 @@ open class MainActivity : Activity() {
         etDays.setText(dy)
         prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
-            .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su).apply()
+            .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su)
+            .putString("searchExtra", if (engine.svc.id == "rambler") etSearchExtra.text.toString().trim() else "").apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())
