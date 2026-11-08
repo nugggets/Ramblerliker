@@ -71,7 +71,7 @@ private const val HOOK_JS = """
    else if(typeof h.forEach==='function'){ h.forEach(function(v,k){out.push(k+': '+v)}); }
    else { for(var k in h) out.push(k+': '+h[k]); }
   }catch(e){} return out.join('\n'); };
- var bs=function(b){ try{ if(typeof FormData!=='undefined' && b instanceof FormData){ var o=[]; b.forEach(function(v,k){ var t=(typeof v==='string')?v:'[file]'; if(t.length>40) t=t.slice(0,12)+'...[len '+t.length+']'; o.push(k+'='+t); }); return 'FormData: '+o.join('&'); } }catch(e){} return String(b||''); };
+ var bs=function(b){ try{ if(typeof FormData!=='undefined' && b instanceof FormData){ var o=[]; b.forEach(function(v,k){ var t=(typeof v==='string')?v:'[file]'; if(t.length>40&&k!=='geo') t=t.slice(0,12)+'...[len '+t.length+']'; o.push(k+'='+t); }); return 'FormData: '+o.join('&'); } }catch(e){} return String(b||''); };
  var dsc=function(e){ try{ var out=[], n=e, i=0;
    while(n&&n.nodeType===1&&i<5){
     var c=(typeof n.className==='string')?n.className:((n.className&&n.className.baseVal)||'');
@@ -1174,6 +1174,17 @@ open class MainActivity : Activity() {
                     }
                 }
                 if (engine.svc.id == "ok" || engine.svc.id == "vk") learnOkLike(o)
+                if (engine.svc.id == "vk" && o.optString("u").contains("dating.getRecommendedUsers") && o.optString("p").startsWith("FormData: ")) {
+                    // координаты, с которыми мини-приложение само просит ленту: нужны нашему запросу (без них сайт отвечает request_invalid)
+                    val g = Regex("(?:^|&)geo=([^&]+)").find(o.optString("p").removePrefix("FormData: "))?.groupValues?.get(1)
+                    if (g != null && g.startsWith("{") && g.endsWith("}") && !g.contains("...[len")) {
+                        val nb = "count=20&geo=$g"
+                        if (prefs.getString("sbody", "") != nb) {
+                            prefs.edit().putString("sbody", nb).apply()
+                            runOnUiThread { engine.logMsg("🔎 ${engine.svc.title}: запомнил координаты ленты из «Браузера»: $g") }
+                        }
+                    }
+                }
                 runOnUiThread {
                     o.put("t", timeF.format(Date()))
                     rec.add(o)

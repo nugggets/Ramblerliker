@@ -454,7 +454,7 @@ val SERVICES = listOf(
         listOf("https://m.vk.ru", "https://vk.ru", "https://www.vk.ru", "https://m.vk.com", "https://vk.com"), "vk.ru", "liker_vk", "_vk",
         listOf("https://m.vk.ru/", "https://vk.ru/", "https://id.vk.ru/", "https://m.vk.com/", "https://vk.com/"), ".vk.ru",
         "https://vkdating-app.ru/api/dating.like", "POST", "user_id={login}&meta={meta}",
-        "https://vkdating-app.ru/api/dating.getRecommendedUsers", "POST", "count=20",
+        "https://vkdating-app.ru/api/dating.getRecommendedUsers", "POST", "count=20&geo={\"latitude\":55.7558,\"longitude\":37.6173}",
         50, VkActivity::class.java, VkKeepAliveService::class.java
     )
 )
@@ -683,6 +683,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // в 0.71 для VK сохранились временные адреса (/dating/like...), сбрасываем их на настоящие адреса vkdating-app.ru
     init {
         if (svc.id == "vk") {
+            val sb0 = prefs.getString("sbody", "") ?: ""
+            if (sb0.isNotEmpty() && !sb0.contains("geo=")) prefs.edit().remove("sbody").apply()
             val lu = prefs.getString("likeUrl", "") ?: ""
             val su = prefs.getString("searchUrl", "") ?: ""
             if ((lu.isNotEmpty() && !lu.contains("dating-app.ru/api/")) || (su.isNotEmpty() && !su.contains("dating-app.ru/api/"))) {
