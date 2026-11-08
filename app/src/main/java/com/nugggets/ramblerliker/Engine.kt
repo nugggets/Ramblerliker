@@ -534,6 +534,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private val logFile = File(app.filesDir, "liker${svc.suffix}.log")
     val reports = ArrayList<Rep>()
     private val repFile = File(app.filesDir, "likes_report${svc.suffix}.tsv")
+    // накопитель диагностики (0.77): история отказов лимита, сбросов, запросов, ошибок, сессий
+    val stats = Stats(File(app.filesDir, "stats_${svc.id}.json"), svc.title)
     // снимок состояния для главного окна (оно живёт в другом процессе и читает этот файл)
     private val statusFile = File(app.filesDir, "status${svc.suffix}.json")
     private var lastStatus = ""
@@ -668,6 +670,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     var resumedScan = false
     var keysLogged = false
     var likeSentAt = 0L
+    private var batchSentAt = 0L
+    private fun batchLat(): Long = if (batchSentAt > 0L) SystemClock.elapsedRealtime() - batchSentAt else -1L
     var aggCount = 0
     var aggStart = 0L
     var lastNotif = ""
@@ -721,6 +725,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private val wd = Runnable {
         if (waiting && running) {
             waiting = false
+            stats.event("wdTimeout")
             loadSite()
             handleError("нет ответа от страницы")
         }
@@ -732,6 +737,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             try {
                 if (prefs.getBoolean("watchdog", true) && running && !waiting && nextAt > 0L && SystemClock.elapsedRealtime() - nextAt > 300000L) {
                     logMsg("⚠ Цикл завис, перезапускаю")
+                    stats.event("watchdog")
                     h.removeCallbacks(tick)
                     h.post(tick)
                 }
@@ -741,6 +747,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 updateNotif()
             } catch (e: Exception) {
             }
+            if (running) stats.touch()
+            stats.flush(false)
             writeStatus()
             onChange?.invoke()
             h.postDelayed(this, 3000)
@@ -806,6 +814,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             old?.uncaughtException(th, err)
         }
         logMsg("⚙ Служба лайков ${svc.title} запущена (процесс приложения создан)")
+        stats.processStart()
         val n = restoreCookies()
         if (n > 0) logMsg("🔑 Восстановлена сохранённая сессия (cookie: $n)")
         writeStatus(true)
@@ -940,10 +949,20 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     // Весь текст диагностики одного сайта. recOverride: запись браузера в нужном размере (иначе берётся сохранённая короткая)
-    fun diagText(recOverride: String? = null): String {
+    fun diagText(recOverride: String? = null, withEnv: Boolean = false): String {
         val sb = StringBuilder()
         sb.append("=== Диагностика ${svc.title} v${verName()} ===\n")
         sb.append(statusText()).append("\n")
+        // автоанализ по накопленной истории: лимиты, сброс, запросы, ошибки, стабильность, выводы
+        try {
+            val winMs = prefs.getLong("siteWinMs", 0L).let { if (it > 0L) it else svc.limitWindowMs }
+            sb.append("\n").append(stats.report(rateMin(), rateMax(), winMs, siteMax(), ci("winTo", DEFAULT_WIN_TO) - ci("winFrom", DEFAULT_WIN_FROM)))
+        } catch (e: Exception) {
+            sb.append("\nавтоанализ не собрался: ${e.message}\n")
+        }
+        sb.append("\n=== Состояние движка и страницы ===\n").append(engineState()).append("\n")
+        if (withEnv) sb.append("\n=== Устройство и система ===\n").append(envText(app))
+        sb.append("\n=== Все настройки сайта (как сохранены, без cookie) ===\n").append(prefsDump()).append("\n")
         sb.append("доп. настройки: в час ${ci("maxHour", 0)}, дневной лимит ${ci("dayCap", 0)}, перерыв ${ci("breakEvery", 0)} лайков на ${ci("breakMin", 0)} мин, дни ${cs("days", "1234567")}, ошибок подряд ${ci("maxErr", 3)}, только Wi-Fi ${cb("wifiOnly", false)}, уведомления ${prefs.getBoolean("alerts", true)}\n")
         sb.append("паузы: после ошибок ${ci("errPauseMin", 0)} мин (0 = нарастающая), анкеты закончились ${ci("feedPauseMin", 45)} мин, после неудачного входа ${ci("authPauseMin", 30)} мин, проверка сброса лимита ${probeText()}\n")
         sb.append("общие настройки: ${if (commonOn()) "ВКЛЮЧЕНЫ" else "выключены"}\n")
@@ -966,8 +985,54 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return sb.toString()
     }
 
+    // Всё, что движок знает о себе прямо сейчас: процесс, скрытая страница, лента, сессия, счётчики
+    private fun engineState(): String {
+        val sb = StringBuilder()
+        sb.append(procLine()).append("\n")
+        try {
+            val wv = web
+            if (wv == null) {
+                sb.append("скрытая страница: закрыта\n")
+            } else {
+                sb.append("скрытая страница: ${maskSecrets(wv.url ?: "?").take(160)}, загружена: $pageReady, на сайте: ${onSite(wv.url)}, ждём ответ: $waiting\n")
+                sb.append("браузер страницы: ${wv.settings.userAgentString.take(200)}\n")
+            }
+        } catch (e: Exception) {
+            sb.append("скрытая страница: не удалось прочитать (${e.message})\n")
+        }
+        try {
+            val ck = collectCookies()
+            sb.append("cookie сайта: ${ck.size}${if (ck.isEmpty()) "" else " (" + ck.entries.joinToString(", ") { it.key + ":" + it.value.length } + ")"}, сессия сохранена ${if (lastCookieSave > 0L) "${(SystemClock.elapsedRealtime() - lastCookieSave) / 60000L} мин назад" else "в этом запуске ещё не сохранялась"}, автовход: ${autoFlag()}, входов восстановлено: $loginRestoredCount\n")
+        } catch (e: Exception) {
+        }
+        sb.append("лента: смещение $offset, есть ещё: $hasMore, срез поиска ${searchIdx + 1}, пустых блоков подряд $emptyStreak, в очереди ${queue.size}, запомнено анкет ${seen.size}, ")
+        sb.append("пауза ленты ${if (feedWaitUntil > SystemClock.elapsedRealtime()) "${(feedWaitUntil - SystemClock.elapsedRealtime()) / 60000L} мин" else "нет"}\n")
+        sb.append("сессия: лайков $sessLikes, ${if (running) "идёт ${(SystemClock.elapsedRealtime() - sessStart) / 60000L} мин" else "остановлена"}, последний лайк ")
+        sb.append(if (lastLikeAt > 0L) "${(SystemClock.elapsedRealtime() - lastLikeAt) / 1000L} с назад" else "в этой сессии ещё не было")
+        sb.append(", лайков в окне лимита ${winCount()}, лимит сайта по факту ${siteMax()}, окно началось ")
+        val ws = prefs.getLong("winStartAt", 0L)
+        sb.append(if (ws > 0L) "${(System.currentTimeMillis() - ws) / 60000L} мин назад" else "не началось").append("\n")
+        sb.append("прочее: уровень пауз после ошибок $errLevel, неудач входа подряд $authFails, пропусков errno=11 $soft11, проверок лимита вручную/по расписанию: ${if (probeAuto) "по расписанию" else "вручную"} (последняя ${if (lastProbeAt > 0L) "${(System.currentTimeMillis() - lastProbeAt) / 60000L} мин назад" else "не было"})\n")
+        return sb.toString()
+    }
+
+    // Все сохранённые настройки сайта одной строкой (cookie и длинные служебные значения не выводим)
+    private fun prefsDump(): String {
+        val skip = setOf("cookies", "lastStick", "lastLimitEvt")
+        val parts = ArrayList<String>()
+        try {
+            for ((k, v) in prefs.all.entries.sortedBy { it.key }) {
+                if (k in skip) continue
+                parts.add("$k=${maskSecrets((v ?: "").toString().replace("\n", " ")).take(120)}")
+            }
+        } catch (e: Exception) {
+        }
+        return parts.joinToString("; ")
+    }
+
     // Файл с диагностикой лежит в общей папке приложения: главный экран собирает «общую диагностику» из файлов всех сайтов
     fun writeDiagFile() {
+        stats.flush(true)
         try {
             val f = File(app.filesDir, "diag_${svc.id}.txt")
             val tmp = File(f.path + ".tmp")
@@ -1045,6 +1110,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         okInId = 0
         pageReady = false
         loadStartedAt = SystemClock.elapsedRealtime()
+        stats.event("pageLoad")
         w().loadUrl(svc.site)
     }
 
@@ -1100,6 +1166,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         v.webViewClient = object : WebViewClient() {
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
                 logMsg("⚠ Процесс страницы упал, пересоздаю скрытое окно")
+                stats.event("renderGone")
                 h.post {
                     destroyWeb()
                     if (running) {
@@ -1483,6 +1550,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             limitWait = true
             pauseUntil = SystemClock.elapsedRealtime() + siteLimitLeftMs()
         }
+        stats.sessionStart()
+        // отказ лимита ещё не закрыт принятым лайком, а движок не работал: замер времени сброса будет неточным
+        if (prefs.getLong("limRefAt", 0L) > 0L) prefs.edit().putBoolean("limGap", true).apply()
         logMsg("▶ Старт. Своего лимита нет (останавливает только лимит сайта), темп ${rateText()} лайков в минуту, окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         offset = resumeOffset()
         sliceOff = null
@@ -1529,6 +1599,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (reason != "остановлено") lastError = reason
         if (was) {
             logMsg("■ Стоп: ${if (reason == "остановлено") "остановлено вручную" else reason}. Лайков за сессию: $sessLikes")
+            stats.sessionEnd(if (reason == "остановлено") "остановлено вручную" else reason)
         }
         writeStatus(true)
         onChange?.invoke()
@@ -1846,6 +1917,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun sliceTotal(): Int = slicePer() * slicePhases()
 
     private fun fetchBatch() {
+        batchSentAt = SystemClock.elapsedRealtime()
         if (svc.id == "mamba" && probing && !mambaLimChecked) {
             // при проверке сначала спрашиваем у сайта, сколько лайков сделано и когда сброс (это не тратит лайк)
             mambaLimChecked = true
@@ -1998,10 +2070,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             waiting = false
             if (!running) return
             if (status == 401 || status == 403 || okAuthBad(text)) {
+                stats.request("search", false, batchLat(), "вход слетел (HTTP $status)")
                 okReauth(null)
                 return
             }
             if (status !in 200..299) {
+                stats.request("search", false, batchLat(), "HTTP $status")
                 handleError("поиск: HTTP $status ${text.take(100)}")
                 return
             }
@@ -2064,6 +2138,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     loadSite()
                 }
             }
+            stats.request(if (kind == "batch") "search" else kind, false, -1L, "$kind: ${msg.take(40)}")
             handleError("$kind: $msg")
         }
     }
@@ -2351,11 +2426,16 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         waiting = false
         if (!running) return
         notReady = 0
+        val bl = batchLat()
+        batchSentAt = 0L
+        var sCounted = false
         if (svc.id == "tabor") {
+            stats.request("boot", true, bl, "")
             onTaborBoot(text)
             return
         }
         if (svc.id == "love") {
+            stats.request("boot", true, bl, "")
             onLoveBoot(text)
             return
         }
@@ -2364,6 +2444,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val ok = okLike
             val j = JSONObject(text)
             val arr = if (mamba) mambaList(j) else if (ok) j.optJSONArray("users") else (j.optJSONArray("data") ?: j.optJSONArray("user"))
+            sCounted = true
+            stats.request("search", arr != null, bl, "нет списка анкет")
             if (arr == null) {
                 handleError("поиск: нет списка анкет: ${text.take(if (mamba) 400 else 100)}")
                 return
@@ -2374,6 +2456,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val perAge = prefs.getInt("perAge", 1).coerceAtLeast(1)
             var taken = 0
             var firstFresh = -1
+            val feedT0 = scanTotal
+            val feedL0 = scanLiked
+            val feedD0 = scanDup
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val lg = if (mamba) mambaPhotoId(o) else if (ok) o.optString("id") else o.optString("login")
@@ -2411,6 +2496,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     scanAdded++
                 }
             }
+            stats.feed(scanTotal - feedT0, scanLiked - feedL0, scanDup - feedD0, added)
             val startOff = offset
             if (mamba) {
                 // лента листается по id последнего фото, а не по номеру
@@ -2517,12 +2603,14 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             }
             scheduleNext(quick = true)
         } catch (ex: Exception) {
+            if (!sCounted) stats.request("search", false, bl, "ответ поиска не разобран")
             handleError("поиск не разобран: ${text.take(100)}")
         }
     }
 
     private fun onLike(login: String, text: String, status: Int = 200) {
         if (!okLike) tr("← like $login HTTP $status: ${text.take(600)}")
+        val lat = if (likeSentAt > 0L) SystemClock.elapsedRealtime() - likeSentAt else -1L
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
@@ -2531,6 +2619,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val j = parseLike(text)
             val code = likeCode(j, text, status)
             if (code == 0) {
+                recordReset(probing)
+                stats.likeOk(lat)
                 loveFail = 0
                 // раз страница залипает после лайка, обновляем её сразу, пока она не успела проигнорировать следующее нажатие
                 if (svc.id == "love" && loveSticky) loadSite()
@@ -2612,15 +2702,20 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 }
                 scheduleNext(extraSec = j.optInt("likestimeout", 0))
             } else if (code == 24) {
+                stats.request("like", false, lat, "вход слетел (код 24)")
+                stats.event("authLost")
                 onAuthLost(login)
             } else {
                 if (svc.id == "rambler" && code == 11) {
                     // по диагностике на такие анкеты сайт отвечает errno=11, но лайк из остатка списывает: это не авария, просто идём дальше
                     soft11++
+                    stats.event("soft11")
+                    stats.request("like", true, lat, "")
                     if (soft11 == 1 || soft11 % 50 == 0) logMsg("ℹ Rambler: errno=11 для анкеты $login, пропускаю (не авария, всего таких: $soft11). Ответ: ${text.take(200)}")
                     scheduleNext()
                     return
                 }
+                stats.request("like", false, lat, if (looksLikeLimit(text)) "отказ: лимит (код $code)" else "код $code")
                 var shown = text.take(100)
                 var tm = ""
                 if (svc.id == "tabor") {
@@ -2683,6 +2778,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         errors++
         rowErr++
         lastError = msg
+        stats.error(msg)
         logMsg("⚠ Ошибка (подряд $rowErr, всего $errors): $msg")
         if (rowErr >= maxErr()) {
             errorPause(msg)
@@ -2693,6 +2789,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // Не получилось войти: не останавливаемся, а через 30 минут пробуем снова и просим войти вручную
     private fun authPause(reason: String) {
+        stats.event("authPause")
         setAuto(false)
         authFails = 0
         val am = ci("authPauseMin", 30).coerceAtLeast(1)
@@ -2708,6 +2805,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Серия ошибок (нет сети, сбой сайта): не останавливаемся, а ждём 5/10/20/30 минут и пробуем снова
     private fun errorPause(msg: String) {
         errLevel++
+        stats.event("errPause")
         val fixed = ci("errPauseMin", 0)
         val min = if (fixed > 0) fixed else minOf(30, 5 shl (errLevel - 1))
         rowErr = 0
@@ -2837,6 +2935,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (probing) return "Проверка уже идёт"
         if (!manual && !inWorkWindow()) return "Вне окна работы"
         probing = true
+        stats.event("probe")
         mambaLimChecked = false
         probeAuto = !manual
         probeBackup = prefs.getLong("siteLimitUntil", 0L)
@@ -2855,6 +2954,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (!probing) return
         probing = false
         likesLeft = 0
+        stats.event("probeErr")
         h.removeCallbacks(probeTimeout)
         logMsg("🔎 Проверка лимита не дала результата ($why), жду расчётного сброса: ${siteLimitClock()}")
         h.removeCallbacks(tick)
@@ -2863,6 +2963,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // Сайт принял лайк, хотя по расчёту лимит ещё закрыт: окно началось заново
     private fun probeSuccess() {
+        stats.event("probeOk")
         probing = false
         h.removeCallbacks(probeTimeout)
         prefs.edit().remove("siteLimitUntil").putLong("winStartAt", 0L).putInt("winCount", 0).apply()
@@ -2892,6 +2993,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun siteLimitPause(reason: String, raw: String = "") {
+        val leftBefore = likesLeft
         val wasProbe = probing
         if (wasProbe) {
             probing = false
@@ -2943,6 +3045,29 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     "сайт назвал сброс: ${if (fromSite != null) "да (через ${fromSite / 60000L} мин)" else "нет"}, ответ сайта: ${raw.take(800).ifEmpty { "пусто" }}").apply()
         } catch (e: Exception) {
         }
+        try {
+            val nowMs = System.currentTimeMillis()
+            if (wasProbe) {
+                stats.event("probeFail")
+            } else {
+                // начало простоя: когда сайт отказал и на когда мы рассчитывали сброс (закрывается первым принятым лайком)
+                if (prefs.getLong("limRefAt", 0L) == 0L) prefs.edit().putLong("limRefAt", nowMs).apply()
+                prefs.edit().putLong("limPredAt", until).apply()
+                val ev = JSONObject()
+                ev.put("ts", nowMs)
+                ev.put("made", made)
+                ev.put("winMin", if (winStart > 0L) (nowMs - winStart) / 60000L else 0L)
+                ev.put("hourBefore", stats.likesSince(3600000L))
+                ev.put("min10", stats.likesSince(600000L))
+                ev.put("day", prefs.getInt("count", 0))
+                ev.put("namedS", if (fromSite != null) fromSite / 1000L else -1L)
+                ev.put("left", leftBefore)
+                ev.put("reason", reason.take(60))
+                ev.put("raw", maskSecrets(raw.take(300)))
+                stats.limitEvent(ev)
+            }
+        } catch (e: Exception) {
+        }
         if (!wasProbe) notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через ${siteLimitLeftText()} (около ${siteLimitClock()}), потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + 60000L
         h.removeCallbacks(tick)
@@ -2951,6 +3076,35 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         onChange?.invoke()
         // Mamba: сразу уточняем у сайта точное время сброса
         if (svc.id == "mamba" && !wasProbe && fromSite == null) h.postDelayed({ if (running && !waiting && siteLimitActive()) mambaLimitsQuery() }, 800)
+    }
+
+    // Первый принятый лайк после отказа: записываем, сколько сайт реально был закрыт и насколько ошибся расчёт сброса
+    private fun recordReset(viaProbe: Boolean) {
+        try {
+            val ref = prefs.getLong("limRefAt", 0L)
+            if (ref <= 0L) return
+            val now = System.currentTimeMillis()
+            val pred = prefs.getLong("limPredAt", 0L)
+            val gap = prefs.getBoolean("limGap", false)
+            prefs.edit().remove("limRefAt").remove("limPredAt").remove("limGap").apply()
+            if (now - ref > 72L * 3600000L) return
+            val j = JSONObject()
+            j.put("ref", ref)
+            j.put("acc", now)
+            j.put("pred", pred)
+            j.put("waitMin", (now - ref) / 60000L)
+            if (pred > 0L) j.put("deltaMin", (now - pred) / 60000L)
+            j.put("probe", viaProbe)
+            j.put("named", prefs.getBoolean("siteResetNamed", false))
+            j.put("gap", gap)
+            // расчётный сброс пришёлся на время вне рабочего окна: лайк мог начаться только с открытием окна, это не ошибка расчёта
+            if (pred > 0L) {
+                val hh = Calendar.getInstance(mskTz).also { it.timeInMillis = pred }.get(Calendar.HOUR_OF_DAY)
+                if (hh < ci("winFrom", DEFAULT_WIN_FROM) || hh >= ci("winTo", DEFAULT_WIN_TO)) j.put("offHours", true)
+            }
+            stats.resetOutcome(j)
+        } catch (e: Exception) {
+        }
     }
 
     private fun mskDayStart(t: Long): Long {

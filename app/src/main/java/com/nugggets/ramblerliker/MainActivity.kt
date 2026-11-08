@@ -432,7 +432,7 @@ open class MainActivity : Activity() {
             toast(if (nx == 0) "Проверка сброса выключена, жду расчётного времени" else "Пока лимит закрыт, раз в $nx мин пробую поставить лайк")
         }
         st.addView(probeBtn, lp(MATCH, WRAP, t = 8))
-        st.addView(pill("📋  Скопировать диагностику (лимит, остаток, запросы)", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { copyDiag() }, lp(MATCH, WRAP, t = 8))
+        st.addView(pill("📋  Скопировать диагностику (лимиты, запросы, анализ, устройство)", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 10) { copyDiag() }, lp(MATCH, WRAP, t = 8))
         col.addView(st, lp(MATCH, WRAP))
 
         // --- темп и лимит ---
@@ -1286,13 +1286,61 @@ open class MainActivity : Activity() {
         window.decorView.postDelayed(recPush, 1500)
     }
 
-    private fun copyDiag() {
+    // Снимок страницы, которую сейчас показывает вкладка «Браузер»: адрес, размер, память, число ключей хранилища и имена cookie
+    // (значения не берём). Диагностике нужно знать, на какой странице сайта мы и что она хранит. Ответ приходит с задержкой, поэтому через колбэк
+    private fun pageProbe(done: (String) -> Unit) {
+        val fin = BooleanArray(1)
+        fun finish(t: String) {
+            if (fin[0]) return
+            fin[0] = true
+            done(t)
+        }
         try {
-            val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cb.setPrimaryClip(ClipData.newPlainText("diag", engine.diagText(recSection(24, 700, 500))))
-            toast("Диагностика скопирована, вставь её мне в чат")
+            val js = "(function(){try{var o={url:location.href,title:document.title,ua:navigator.userAgent,online:navigator.onLine,lang:navigator.language," +
+                "vis:document.visibilityState,w:innerWidth,h:innerHeight,dpr:devicePixelRatio,len:((document.body&&document.body.innerText)||'').length,ls:0,ss:0,ck:[]," +
+                "mem:(performance.memory?Math.round(performance.memory.usedJSHeapSize/1048576):-1)," +
+                "nav:performance.getEntriesByType('navigation').map(function(n){return Math.round(n.duration)+'ms '+(n.transferSize||0)+'b'}).join(',')," +
+                "res:performance.getEntriesByType('resource').length};" +
+                "try{o.ls=localStorage.length}catch(e){} try{o.ss=sessionStorage.length}catch(e){} " +
+                "try{o.ck=document.cookie.split(';').map(function(c){return c.trim().split('=')[0]}).filter(Boolean)}catch(e){} " +
+                "return JSON.stringify(o);}catch(e){return JSON.stringify({err:String(e)})}})()"
+            web.evaluateJavascript(js) { r ->
+                var out = ""
+                try {
+                    val raw = (org.json.JSONTokener(r ?: "null").nextValue() as? String) ?: ""
+                    val o = JSONObject(raw)
+                    val names = ArrayList<String>()
+                    val ck = o.optJSONArray("ck")
+                    if (ck != null) for (i in 0 until ck.length()) names.add(ck.optString(i))
+                    out = "адрес: ${maskSecrets(o.optString("url")).take(200)}\n" +
+                        "заголовок: ${o.optString("title").take(80)}\n" +
+                        "текста на странице: ${o.optInt("len")} симв., видимость: ${o.optString("vis")}, окно ${o.optInt("w")}x${o.optInt("h")} (dpr ${o.optDouble("dpr")}), онлайн: ${o.optBoolean("online")}, язык ${o.optString("lang")}\n" +
+                        "память JS: ${o.optInt("mem")} МБ, ресурсов у страницы: ${o.optInt("res")}, загрузка страницы: ${o.optString("nav")}\n" +
+                        "localStorage ключей: ${o.optInt("ls")}, sessionStorage: ${o.optInt("ss")}\n" +
+                        "cookie страницы (только имена, без служебных HttpOnly): ${names.size}${if (names.isEmpty()) "" else " (" + names.joinToString(", ") + ")"}\n" +
+                        "браузер: ${o.optString("ua").take(200)}"
+                } catch (e: Exception) {
+                    out = "не удалось разобрать ответ страницы: ${e.message}"
+                }
+                finish(out)
+            }
+            window.decorView.postDelayed({ finish("страница не ответила за 2.5 с") }, 2500)
         } catch (e: Exception) {
-            toast("Не получилось: ${e.message}")
+            finish("не удалось спросить страницу: ${e.message}")
+        }
+    }
+
+    private fun copyDiag() {
+        toast("Собираю диагностику…")
+        pageProbe { probe ->
+            try {
+                val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val t = engine.diagText(recSection(24, 700, 500), true) + "\n=== Страница во вкладке «Браузер» ===\n" + probe + "\n"
+                cb.setPrimaryClip(ClipData.newPlainText("diag", t))
+                toast("Диагностика скопирована (${t.length / 1000} тыс. символов), вставь её мне в чат")
+            } catch (e: Exception) {
+                toast("Не получилось: ${e.message}")
+            }
         }
     }
 

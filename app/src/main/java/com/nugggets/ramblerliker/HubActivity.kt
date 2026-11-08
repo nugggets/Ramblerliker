@@ -322,21 +322,11 @@ class HubActivity : Activity() {
             val sb = StringBuilder()
             sb.append("=== ОБЩАЯ ДИАГНОСТИКА Liker v${versionName()} ===\n")
             sb.append("собрана ${f.format(java.util.Date())} МСК\n")
-            sb.append("телефон: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})\n")
+            // устройство и система: батарея, сеть, память, WebView, ограничения, почему система убивала процессы
             try {
-                val bm = getSystemService(android.content.Context.BATTERY_SERVICE) as android.os.BatteryManager
-                val pm = getSystemService(PowerManager::class.java)
-                val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-                val caps = cm.getNetworkCapabilities(cm.activeNetwork)
-                val net = when {
-                    caps == null -> "нет сети"
-                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
-                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "мобильная"
-                    else -> "другая"
-                }
-                sb.append("батарея: ${bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)}%, без ограничений батареи: ${pm.isIgnoringBatteryOptimizations(packageName)}, сеть: $net\n")
+                sb.append(envText(this))
             } catch (e: Exception) {
-                sb.append("батарея и сеть: не удалось узнать (${e.message})\n")
+                sb.append("устройство и система: не удалось собрать (${e.message})\n")
             }
             val cj = Common.read(this)
             sb.append("общие настройки: ${if (Common.on(this)) "ВКЛЮЧЕНЫ" else "выключены"} $cj\n")
@@ -345,6 +335,13 @@ class HubActivity : Activity() {
                 val s = readStatus(this, sv)
                 sb.append("${sv.title}: ${if (!s.exists) "ещё не запускался" else if (s.running) "РАБОТАЕТ" else "остановлен"}")
                 if (s.exists) sb.append(", ${s.verdict}, лайков сегодня ${s.count}, за сессию ${s.sess}, ошибок ${s.errors}, следующее: ${s.next}")
+                sb.append("\n")
+            }
+            sb.append("\n=== СРАВНЕНИЕ САЙТОВ (накопленная статистика, подробности ниже в разделах сайтов) ===\n")
+            for (sv in SERVICES) {
+                val sf = java.io.File(filesDir, "stats_${sv.id}.json")
+                sb.append("${sv.title}: ")
+                sb.append(if (sf.exists()) Stats(sf, sv.title).compactLine() else "статистика ещё не копилась")
                 sb.append("\n")
             }
             for (sv in SERVICES) {
@@ -358,7 +355,8 @@ class HubActivity : Activity() {
                 }
             }
             val cb = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            cb.setPrimaryClip(android.content.ClipData.newPlainText("diag", sb.toString()))
+            val out = if (sb.length > 600000) sb.substring(0, 600000) + "\n...[обрезано: слишком длинно для буфера обмена]" else sb.toString()
+            cb.setPrimaryClip(android.content.ClipData.newPlainText("diag", out))
             toast("Общая диагностика скопирована (${sb.length / 1000} тыс. символов), вставь её мне в чат")
         } catch (e: Exception) {
             toast("Не получилось: ${e.message}")
