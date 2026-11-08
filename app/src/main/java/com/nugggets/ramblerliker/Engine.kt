@@ -680,6 +680,17 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private val okCmds = java.util.concurrent.ConcurrentLinkedQueue<String>()
     // VK Знакомства устроены так же, как ОК Знакомства (тот же движок, другой адрес API: vkdating-app.ru)
     private val okLike = svc.id == "ok" || svc.id == "vk"
+    // в 0.71 для VK сохранились временные адреса (/dating/like...), сбрасываем их на настоящие адреса vkdating-app.ru
+    init {
+        if (svc.id == "vk") {
+            val lu = prefs.getString("likeUrl", "") ?: ""
+            val su = prefs.getString("searchUrl", "") ?: ""
+            if ((lu.isNotEmpty() && !lu.contains("dating-app.ru/api/")) || (su.isNotEmpty() && !su.contains("dating-app.ru/api/"))) {
+                prefs.edit().remove("likeUrl").remove("likeBody").remove("likeMethod")
+                    .remove("searchUrl").remove("sbody").remove("searchMethod").apply()
+            }
+        }
+    }
     fun okHost(): String = if (svc.id == "vk") "vkdating-app.ru" else "okdating-app.ru"
     @Volatile private var okReadyFlag = false
     private var okSeq = 0
