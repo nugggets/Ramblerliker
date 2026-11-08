@@ -36,3 +36,12 @@ class OkActivity : MainActivity() {
 class OkKeepAliveService : KeepAliveService() {
     override val svcId: String = "ok"
 }
+
+// Окно и служба VK Знакомства: отдельный процесс (:vk)
+class VkActivity : MainActivity() {
+    override fun serviceId(): String = "vk"
+}
+
+class VkKeepAliveService : KeepAliveService() {
+    override val svcId: String = "vk"
+}

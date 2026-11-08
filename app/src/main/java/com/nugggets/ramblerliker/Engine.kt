@@ -446,6 +446,15 @@ val SERVICES = listOf(
         40, LoveActivity::class.java, LoveKeepAliveService::class.java,
         // Love.ru: по диагностике отказ «Превышен ежедневный лимит на отправку симпатий» пришёл после ~10000 лайков, после полуночи лайки пошли снова
         siteLimit = 10000, learnWin = false, dailyReset = true
+    ),
+    // VK Знакомства: мини-приложение m.vk.ru/dating. Пока только вход и запись из «Браузера»: адреса ленты и лайка неизвестны,
+    // их даст запись запросов. Адреса ниже временные, чтобы настройки открывались
+    Svc(
+        "vk", "VK Знакомства", "https://m.vk.ru/dating",
+        listOf("https://m.vk.ru", "https://vk.ru", "https://www.vk.ru", "https://m.vk.com", "https://vk.com"), "vk.ru", "liker_vk", "_vk",
+        listOf("https://m.vk.ru/", "https://vk.ru/", "https://id.vk.ru/", "https://m.vk.com/", "https://vk.com/"), ".vk.ru",
+        "/dating/like?user={login}", "POST", "", "/dating", "GET", "",
+        50, VkActivity::class.java, VkKeepAliveService::class.java
     )
 )
 
