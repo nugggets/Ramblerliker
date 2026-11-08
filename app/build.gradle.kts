@@ -11,8 +11,8 @@ android {
         applicationId = "com.nugggets.ramblerliker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 71
-        versionName = "0.71"
+        versionCode = 72
+        versionName = "0.72"
     }
 
     signingConfigs {

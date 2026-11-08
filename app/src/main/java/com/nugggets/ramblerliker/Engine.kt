@@ -458,6 +458,16 @@ val SERVICES = listOf(
     )
 )
 
+// В диагностике скрываем токены и ключи (access_token ВК и подобные), чтобы её можно было спокойно пересылать
+fun maskSecrets(t: String): String {
+    var r = t
+    r = Regex("(access_token|logout_hash|crashToken|token|sign|secret|password|passwd)=[^&\\s\"]+").replace(r, "$1=***")
+    r = Regex("\"(access_token|logout_hash|token|secret|sign|key)\"\\s*:\\s*\"[^\"]*\"").replace(r, "\"$1\":\"***\"")
+    r = Regex("([?&]key=)[0-9a-f]{20,}").replace(r, "$1***")
+    r = Regex("vk1\\.[a-zA-Z]\\.[A-Za-z0-9_\\-]{30,}").replace(r, "vk1.***")
+    return r
+}
+
 class Prof(val name: String, val age: String, val from: String, val to: String, val city: String)
 class Rep(val ts: Long, val login: String, val p: Prof)
 
@@ -930,7 +940,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             sb.append("\n=== Запросы службы (последние) ===\n").append(trace.toList().takeLast(25).joinToString("\n")).append("\n")
         } catch (e: Exception) {
         }
-        val r = recOverride ?: recText
+        val r = maskSecrets(recOverride ?: recText)
         if (r.isNotEmpty()) sb.append("\n").append(r)
         try {
             sb.append("\n=== Журнал (последние 60) ===\n").append(logs.toList().takeLast(60).joinToString("\n"))
