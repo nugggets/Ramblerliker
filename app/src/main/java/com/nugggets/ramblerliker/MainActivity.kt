@@ -146,6 +146,7 @@ open class MainActivity : Activity() {
     private lateinit var etLikeBody: EditText
     private lateinit var etSearchUrl: EditText
     private lateinit var etSearchExtra: EditText
+    private lateinit var etSliceAges: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
     private var geoOrigin = ""
     private lateinit var web: WebView
@@ -574,6 +575,7 @@ open class MainActivity : Activity() {
         etLikeBody = inp("тело запроса лайка (если есть)", prefs.getString("likeBody", sv.defLikeBody) ?: sv.defLikeBody, false)
         etSearchUrl = inp("URL поиска", prefs.getString("searchUrl", sv.defSearchUrl) ?: sv.defSearchUrl, false)
         etSearchExtra = inp("доп. адреса поиска", prefs.getString("searchExtra", "") ?: "", false)
+        etSliceAges = inp("срезы по возрасту", prefs.getString("sliceAges", "75") ?: "75", false)
         etSearchExtra.isSingleLine = false
         etSearchExtra.minLines = 3
         etSearchExtra.maxLines = 8
@@ -588,6 +590,8 @@ open class MainActivity : Activity() {
         if (sv.id == "rambler") {
             body.addView(lbl("Дополнительные адреса поиска, по одному в строке ({offset} обязателен). Когда основной список закончится, приложение пройдёт по ним, например по вкладкам сайта «Онлайн» и «Новые». Адреса видны в диагностике после того, как нажмёшь эти вкладки во вкладке «Браузер»."), lp(MATCH, WRAP, t = 12))
             body.addView(etSearchExtra, lp(MATCH, WRAP, t = 6))
+            body.addView(lbl("Срезы по возрасту: поиск сайта отдаёт максимум ~1000 анкет, поэтому приложение ищет по одному возрасту, от старшего к младшему. «75» = с 75 вниз до нижней границы твоего фильтра на сайте, «75-50» = с 75 до 50, «0» = выключить."), lp(MATCH, WRAP, t = 12))
+            body.addView(etSliceAges, lp(MATCH, WRAP, t = 6))
         }
         body.addView(
             pill("URL лайка по умолчанию", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { etLikeUrl.setText(sv.defLikeUrl) },
@@ -1386,7 +1390,8 @@ open class MainActivity : Activity() {
         prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
             .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su)
-            .putString("searchExtra", if (engine.svc.id == "rambler") etSearchExtra.text.toString().trim() else "").apply()
+            .putString("searchExtra", if (engine.svc.id == "rambler") etSearchExtra.text.toString().trim() else "")
+            .putString("sliceAges", etSliceAges.text.toString().trim().ifEmpty { "0" }).apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())

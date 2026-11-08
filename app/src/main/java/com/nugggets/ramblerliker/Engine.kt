@@ -1732,6 +1732,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // С какого места продолжать просмотр поиска: всё до прошлой позиции уже лайкнуто, заново его не листаем
     private fun resumeOffset(): Long {
         if (svc.id != "rambler") return 0L
+        if (sliceAges().isNotEmpty()) return 0L
         val saved = prefs.getInt("scanOffset", 0)
         val fresh = System.currentTimeMillis() - prefs.getLong("scanAt", 0L) < 6 * 3600000L
         val same = prefs.getInt("scanSig", 0) == searchBody().hashCode()
@@ -1753,6 +1754,30 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return listOf(main) + extra
     }
 
+    // Срезы по возрасту: поиск сайта отдаёт максимум ~1000 анкет, поэтому ищем по одному возрасту, от старшего к младшему.
+    // Настройка «sliceAges»: "75" = с 75 вниз до нижней границы фильтра сайта, "75-50" = с 75 до 50, пусто/0 = выключено
+    private fun sliceAges(): List<Int> {
+        if (svc.id != "rambler") return emptyList()
+        val raw = (prefs.getString("sliceAges", "75") ?: "75").trim()
+        if (raw.isEmpty() || raw == "0") return emptyList()
+        val parts = raw.split("-", "–", " ").filter { it.isNotBlank() }
+        val hi = parts.getOrNull(0)?.toIntOrNull() ?: return emptyList()
+        val siteLow = Regex("(?:^|&)bage=(\\d+)").find(searchBody())?.groupValues?.get(1)?.toIntOrNull() ?: 18
+        val lo = (parts.getOrNull(1)?.toIntOrNull() ?: siteLow).coerceAtLeast(18)
+        if (hi < lo) return emptyList()
+        return (hi downTo lo).toList()
+    }
+
+    private fun slicedBody(body: String, age: Int): String {
+        var b = body
+        b = if (Regex("(^|&)bage=\\d+").containsMatchIn(b)) b.replace(Regex("(^|&)bage=\\d+"), "$1bage=$age") else "$b&bage=$age"
+        b = if (Regex("(^|&)tage=\\d+").containsMatchIn(b)) b.replace(Regex("(^|&)tage=\\d+"), "$1tage=$age") else "$b&tage=$age"
+        return b
+    }
+
+    // всего срезов = адреса поиска × возрасты
+    private fun sliceTotal(): Int = searchUrls().size * maxOf(1, sliceAges().size)
+
     private fun fetchBatch() {
         if (svc.id == "mamba" && probing && !mambaLimChecked) {
             // при проверке сначала спрашиваем у сайта, сколько лайков сделано и когда сброс (это не тратит лайк)
@@ -1771,9 +1796,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             okSend("batch", okVal("searchUrl", svc.defSearchUrl), okParams(searchBody(), "", "", offset), "")
             return
         }
-        val body = searchBody()
+        var body = searchBody()
         val urls = searchUrls()
-        val surl = urls[searchIdx % urls.size].replace("{offset}", offset.toString())
+        val ages = sliceAges()
+        val si = searchIdx % (urls.size * maxOf(1, ages.size))
+        if (ages.isNotEmpty()) body = slicedBody(body, ages[si / urls.size])
+        val surl = urls[si % urls.size].replace("{offset}", offset.toString())
         val smeth = prefs.getString("searchMethod", svc.defSearchMethod) ?: svc.defSearchMethod
         val sbod = body.replace("{offset}", offset.toString())
         waiting = true
@@ -2289,15 +2317,17 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     }
                 } catch (e: Exception) {
                 }
-                val nUrls = searchUrls().size
-                logMsg("📊 Итог прохода по поиску ${searchIdx + 1} из $nUrls: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded. Поля ответа сайта: $extra" +
+                val nUrls = sliceTotal()
+                val sAges = sliceAges()
+                val ageTxt = if (sAges.isNotEmpty()) " (возраст ${sAges[(searchIdx % nUrls) / searchUrls().size]})" else ""
+                logMsg("📊 Итог прохода по поиску ${searchIdx + 1} из $nUrls$ageTxt: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded. Поля ответа сайта: $extra" +
                     (if (svc.id == "rambler") ". Значения own_like в списке: $ownDist, примеры «уже лайкнутых»: $ownSamples" else ""))
                 ownDist.clear()
                 ownSamples.clear()
                 if (nUrls > 1) {
                     searchIdx++
                     if (searchIdx < nUrls) {
-                        logMsg("➡ Перехожу к следующему адресу поиска (${searchIdx + 1} из $nUrls)")
+                        logMsg("➡ Перехожу к следующему срезу поиска (${searchIdx + 1} из $nUrls)")
                         scanTotal = 0
                         scanLiked = 0
                         scanDup = 0
