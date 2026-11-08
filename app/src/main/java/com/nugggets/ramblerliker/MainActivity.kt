@@ -625,10 +625,11 @@ open class MainActivity : Activity() {
         if (sv.id == "vk") {
             body.addView(
                 lbl(
-                    "VK Знакомства: пока подключены только вход и запись запросов (теперь и внутри окна самого мини-приложения), лайки сами не ставятся. " +
-                        "1) Вкладка «Браузер»: войди во ВКонтакте и открой знакомства. " +
-                        "2) Пролистай несколько анкет и поставь 2–3 лайка вручную. " +
-                        "3) Открой диагностику и пришли блок «Запись из «Браузера»» целиком: по нему я подключу ленту и лайк."
+                    "Адреса ${sv.title} заданы по записи запросов: лента dating.getRecommendedUsers, лайк dating.like (vkdating-app.ru). " +
+                        "Токен и остальные параметры приложение берёт у самого мини-приложения, ничего вводить не нужно. " +
+                        "1) Вкладка «Браузер»: войди во ВКонтакте, открой знакомства и дождись анкет. " +
+                        "2) Поставь лимит 3 и жми «Запустить». В журнале должно появиться «VK Знакомства: мини-приложение загружено, токен получен». " +
+                        "Сайт отдаёт ограниченное число лайков, остаток виден в ответах («осталось у сайта»)."
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
@@ -1117,9 +1118,10 @@ open class MainActivity : Activity() {
     private fun learnOkLike(o: JSONObject) {
         try {
             val u = o.optString("u")
-            val i = u.indexOf("okdating-app.ru/api/")
+            val key = "dating-app.ru/api/"
+            val i = u.indexOf(key)
             if (i < 0) return
-            val m = u.substring(i + 20).substringBefore("?")
+            val m = u.substring(i + key.length).substringBefore("?")
             val ml = m.lowercase()
             if (!ml.startsWith("dating.") || !(ml.contains("like") || ml.contains("react") || ml.contains("vote"))) return
             if (listOf("dislike", "unlike", "get", "list", "super", "skip", "remove", "revoke", "delete", "count").any { ml.contains(it) }) return
@@ -1138,7 +1140,7 @@ open class MainActivity : Activity() {
                 }
             }
             if (!parts.contains("user_id={login}")) return
-            val url = "https://okdating-app.ru/api/$m"
+            val url = "https://${engine.okHost()}/api/$m"
             val body = parts.joinToString("&")
             if (prefs.getString("likeUrl", "") == url && prefs.getString("likeBody", "") == body) return
             prefs.edit().putString("likeUrl", url).putString("likeMethod", "POST").putString("likeBody", body).apply()
@@ -1146,7 +1148,7 @@ open class MainActivity : Activity() {
                 etLikeUrl.setText(url)
                 etLikeMethod.setText("POST")
                 etLikeBody.setText(body)
-                engine.logMsg("🔎 OK: запомнил адрес лайка из твоего лайка: $m, тело: $body")
+                engine.logMsg("🔎 ${engine.svc.title}: запомнил адрес лайка из твоего лайка: $m, тело: $body")
             }
         } catch (e: Exception) {
         }
@@ -1171,7 +1173,7 @@ open class MainActivity : Activity() {
                         prefs.edit().putString("mvars", mv.groupValues[1]).apply()
                     }
                 }
-                if (engine.svc.id == "ok") learnOkLike(o)
+                if (engine.svc.id == "ok" || engine.svc.id == "vk") learnOkLike(o)
                 runOnUiThread {
                     o.put("t", timeF.format(Date()))
                     rec.add(o)
@@ -1240,7 +1242,7 @@ open class MainActivity : Activity() {
     // Запись из «Браузера» для диагностики: клики и запросы самого сайта (у OK только запросы okdating и клики)
     private fun recSection(maxN: Int, respN: Int, paramN: Int): String {
         val netM = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
-        val ok = engine.svc.id == "ok"
+        val ok = engine.svc.id == "ok" || engine.svc.id == "vk"
         // счётчики и реклама забивают запись и вытесняют нужные запросы сайта: выбрасываем их, у Rambler оставляем только запросы /api/
         val noise = listOf("mc.yandex", "google", "kraken.rambler", "/cnt/", "analyticsSend", "top-fwz", "adriver", "doubleclick", "an.yandex")
         val rambler = engine.svc.id == "rambler"
@@ -1249,7 +1251,7 @@ open class MainActivity : Activity() {
                 val u = it.optString("u")
                 it.optString("m") == "CLICK" || (it.optString("m").uppercase() in netM && noise.none { n -> u.contains(n) } && (!rambler || u.contains("/api/")))
             }.takeLast(maxN)
-        else rec.filter { it.optString("u").contains("okdating") || it.optString("m") == "CLICK" }.takeLast(14)
+        else rec.filter { it.optString("u").contains("dating-app.ru") || it.optString("m") == "CLICK" }.takeLast(14)
         if (ok && recs.isEmpty()) return ""
         val sb = StringBuilder("=== Запись из «Браузера» ===\n")
         for (o in recs) {
@@ -1346,7 +1348,7 @@ open class MainActivity : Activity() {
         val a = JSONArray()
         for (o in filtered()) {
             val c = JSONObject(o.toString())
-            c.put("r", c.optString("r").take(if (c.optString("u").contains("okdating")) 3000 else 700))
+            c.put("r", c.optString("r").take(if (c.optString("u").contains("dating-app.ru")) 3000 else 700))
             val hd = c.optString("h")
             if (hd.isNotEmpty()) {
                 c.put("h", hd.split("\n").joinToString("\n") { ln ->

@@ -447,13 +447,14 @@ val SERVICES = listOf(
         // Love.ru: по диагностике отказ «Превышен ежедневный лимит на отправку симпатий» пришёл после ~10000 лайков, после полуночи лайки пошли снова
         siteLimit = 10000, learnWin = false, dailyReset = true
     ),
-    // VK Знакомства: мини-приложение m.vk.ru/dating. Пока только вход и запись из «Браузера»: адреса ленты и лайка неизвестны,
-    // их даст запись запросов. Адреса ниже временные, чтобы настройки открывались
+    // VK Знакомства: мини-приложение m.vk.ru/dating. Тот же движок, что у ОК: лента dating.getRecommendedUsers и лайк dating.like
+    // на vkdating-app.ru, токен и параметры берутся у самого мини-приложения (см. OK_JS)
     Svc(
         "vk", "VK Знакомства", "https://m.vk.ru/dating",
         listOf("https://m.vk.ru", "https://vk.ru", "https://www.vk.ru", "https://m.vk.com", "https://vk.com"), "vk.ru", "liker_vk", "_vk",
         listOf("https://m.vk.ru/", "https://vk.ru/", "https://id.vk.ru/", "https://m.vk.com/", "https://vk.com/"), ".vk.ru",
-        "/dating/like?user={login}", "POST", "", "/dating", "GET", "",
+        "https://vkdating-app.ru/api/dating.like", "POST", "user_id={login}&meta={meta}",
+        "https://vkdating-app.ru/api/dating.getRecommendedUsers", "POST", "count=20",
         50, VkActivity::class.java, VkKeepAliveService::class.java
     )
 )
@@ -677,6 +678,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // OK: очередь команд для окна мини-приложения и состояние обмена с ним
     private val okCmds = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    // VK Знакомства устроены так же, как ОК Знакомства (тот же движок, другой адрес API: vkdating-app.ru)
+    private val okLike = svc.id == "ok" || svc.id == "vk"
+    fun okHost(): String = if (svc.id == "vk") "vkdating-app.ru" else "okdating-app.ru"
     @Volatile private var okReadyFlag = false
     private var okSeq = 0
     private var okInId = 0
@@ -1060,15 +1064,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         cm.setAcceptThirdPartyCookies(v, true)
         v.addJavascriptInterface(Bridge(), "Rec")
         // OK: мини-приложение во вложенном окне, поэтому наш скрипт ставим во все окна страницы
-        if (svc.id == "ok") {
+        if (okLike) {
             try {
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-                    WebViewCompat.addDocumentStartJavaScript(v, OK_JS, setOf("*"))
+                    WebViewCompat.addDocumentStartJavaScript(v, OK_JS.replace("okdating-app.ru/api/", okHost() + "/api/"), setOf("*"))
                 } else {
-                    logMsg("⚠ OK: эта версия WebView не умеет работать во вложенных окнах. Обнови «Android System WebView» в Google Play")
+                    logMsg("⚠ ${svc.title}: эта версия WebView не умеет работать во вложенных окнах. Обнови «Android System WebView» в Google Play")
                 }
             } catch (e: Exception) {
-                logMsg("⚠ OK: не удалось включить работу во вложенных окнах: ${e.message}")
+                logMsg("⚠ ${svc.title}: не удалось включить работу во вложенных окнах: ${e.message}")
             }
         }
         // геопозицию отдаём только сайту сервиса и только если приложению её разрешили
@@ -1619,14 +1623,14 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             h.postDelayed(tick, 6000)
             return
         }
-        if (svc.id == "ok" && !okReadyFlag) {
+        if (okLike && !okReadyFlag) {
             // мини-приложение ещё грузится и не показало свой токен
             notReady++
-            if (notReady == 1) logMsg("… OK: жду, пока загрузится мини-приложение знакомств и выдаст токен")
+            if (notReady == 1) logMsg("… ${svc.title}: жду, пока загрузится мини-приложение знакомств и выдаст токен")
             if (notReady > 45) {
                 notReady = 0
                 val u = page.url ?: ""
-                logMsg("⚠ OK: мини-приложение не загрузилось за 90 с (страница: ${u.take(80)}). " +
+                logMsg("⚠ ${svc.title}: мини-приложение не загрузилось за 90 с (страница: ${u.take(80)}). " +
                     (if (u.contains("login", true) || u.contains("st.cmd=anonym", true)) "Похоже, нет входа в ОК: войди во вкладке «Браузер». " else "") +
                     "Перезагружаю страницу")
                 loadSite()
@@ -1728,7 +1732,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     private fun searchBody(): String {
         if (svc.id == "mamba") return mambaBody()
-        if (svc.id == "ok") return okVal("sbody", svc.defSbody)
+        if (okLike) return okVal("sbody", svc.defSbody)
         return (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY }
     }
 
@@ -1842,7 +1846,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             w().evaluateJavascript("if(window.__lk&&window.__lk.boot){window.__lk.boot();}else{Rec.apiErr('notready-batch','');}", null)
             return
         }
-        if (svc.id == "ok") {
+        if (okLike) {
             okSend("batch", okVal("searchUrl", svc.defSearchUrl), okParams(searchBody(), "", "", offset), "")
             return
         }
@@ -1867,7 +1871,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun sendLike(login: String) {
-        if (svc.id == "ok") {
+        if (okLike) {
             okSend("like", okVal("likeUrl", svc.defLikeUrl), okParams(okVal("likeBody", svc.defLikeBody), login, okMeta[login] ?: "", 0L), login)
             return
         }
@@ -1926,7 +1930,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         okInLogin = login
         val c = JSONObject()
         c.put("id", okSeq)
-        c.put("url", if (url.startsWith("http")) url else "https://okdating-app.ru$url")
+        c.put("url", if (url.startsWith("http")) url else "https://${okHost()}$url")
         c.put("params", params)
         okCmds.clear()
         okCmds.add(c.toString())
@@ -1940,7 +1944,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (okReadyFlag) return
         okReadyFlag = true
         notReady = 0
-        logMsg("🔑 OK: мини-приложение загружено ($host), токен получен")
+        logMsg("🔑 ${svc.title}: мини-приложение загружено ($host), токен получен")
     }
 
     private fun okAuthBad(text: String): Boolean {
@@ -1954,13 +1958,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         sessionGood = false
         authFails++
         errors++
-        lastError = "OK: токен не принят"
+        lastError = "${svc.title}: токен не принят"
         if (login != null) queue.addFirst(login)
         if (authFails > 4) {
-            authPause("OK: не удалось получить новый токен (попыток: ${authFails - 1})")
+            authPause("${svc.title}: не удалось получить новый токен (попыток: ${authFails - 1})")
             return
         }
-        logMsg("⚠ OK: токен не принят, перезагружаю страницу и беру новый (попытка $authFails из 4)")
+        logMsg("⚠ ${svc.title}: токен не принят, перезагружаю страницу и беру новый (попытка $authFails из 4)")
         if (authFails == 1) {
             val n = restoreCookies()
             if (n > 0) logMsg("🔑 Вернул сохранённую сессию (cookie: $n)")
@@ -2001,7 +2005,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
-        handleError("OK: запрос не прошёл ($msg)")
+        handleError("${svc.title}: запрос не прошёл ($msg)")
     }
 
     // Анкета из ленты OK: имя, возраст, расстояние
@@ -2144,7 +2148,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (status == 401 || status == 403) return 24
         if (status !in 200..299) return status
         if (text.trimStart().startsWith("<")) return -1 // вместо ответа пришла HTML-страница (вход, капча)
-        if (svc.id == "ok") {
+        if (okLike) {
             if (!text.trimStart().startsWith("{")) return -1
             if (okAuthBad(text)) return 24
             if (j.has("error_code") && j.optInt("error_code", 0) != 0) return -1
@@ -2344,7 +2348,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
         try {
             val mamba = svc.id == "mamba"
-            val ok = svc.id == "ok"
+            val ok = okLike
             val j = JSONObject(text)
             val arr = if (mamba) mambaList(j) else if (ok) j.optJSONArray("users") else (j.optJSONArray("data") ?: j.optJSONArray("user"))
             if (arr == null) {
@@ -2505,7 +2509,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun onLike(login: String, text: String, status: Int = 200) {
-        if (svc.id != "ok") tr("← like $login HTTP $status: ${text.take(600)}")
+        if (!okLike) tr("← like $login HTTP $status: ${text.take(600)}")
         h.removeCallbacks(wd)
         waiting = false
         if (!running) return
@@ -2585,7 +2589,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                         aggStart = nowE
                     }
                 }
-                if (sessLikes <= 3 && prefs.getBoolean("logReply", true)) logMsg("   ответ сайта: ${text.take(if (svc.id == "ok") 500 else 150)}")
+                if (sessLikes <= 3 && prefs.getBoolean("logReply", true)) logMsg("   ответ сайта: ${text.take(if (okLike) 500 else 150)}")
                 addReport(login)
                 profInfo.remove(login)
                 if (lastCookieSave == 0L || SystemClock.elapsedRealtime() - lastCookieSave > 300000L) saveCookies()
@@ -2634,7 +2638,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             authPause("Не удалось войти автоматически (попыток: ${authFails - 1})")
             return
         }
-        if (svc.id == "ok") {
+        if (okLike) {
             authFails--
             okReauth(login)
             return
