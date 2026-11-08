@@ -43,6 +43,7 @@ fun svcColor(id: String): Int = when (id) {
     "ok" -> 0xFFEE8208.toInt()
     "love" -> 0xFFE5484D.toInt()
     "vk" -> 0xFF2787F5.toInt()
+    "beboo" -> 0xFF4D8EC5.toInt()
     else -> 0xFF4C8DFF.toInt()
 }
 

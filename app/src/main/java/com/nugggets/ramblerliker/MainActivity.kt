@@ -146,6 +146,7 @@ open class MainActivity : Activity() {
     private lateinit var etLikeBody: EditText
     private lateinit var etSearchUrl: EditText
     private lateinit var etSearchExtra: EditText
+    private lateinit var etLinkSel: EditText
     private lateinit var etSliceAges: EditText
     private lateinit var etOnlineFirst: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
@@ -578,9 +579,23 @@ open class MainActivity : Activity() {
         etSearchExtra = inp("доп. адреса поиска", prefs.getString("searchExtra", "") ?: "", false)
         etOnlineFirst = inp("online для «недавно активные»", prefs.getString("onlineFirst", "") ?: "", false)
         etSliceAges = inp("срезы по возрасту", prefs.getString("sliceAges", "75") ?: "75", false)
+        etLinkSel = inp("CSS-селектор ссылок на анкеты (необязательно)", prefs.getString("bebooLinkSel", "") ?: "", false)
         etSearchExtra.isSingleLine = false
         etSearchExtra.minLines = 3
         etSearchExtra.maxLines = 8
+        if (sv.id == "beboo") {
+            // у Beboo нет адреса лайка: поля скрыты, но нужны для сохранения. В поле тела лайка хранится селектор кнопки лайка
+            etLikeUrl.visibility = View.GONE
+            etLikeMethod.visibility = View.GONE
+            body.addView(etLikeUrl)
+            body.addView(etLikeMethod)
+            body.addView(lbl("Адрес поиска с фильтрами (город, возраст и т. д. выбери на сайте и вставь сюда адрес страницы поиска)"), lp(MATCH, WRAP, t = 12))
+            body.addView(etSearchUrl, lp(MATCH, WRAP, t = 6))
+            body.addView(lbl("CSS-селектор кнопки лайка на странице анкеты (пусто = приложение ищет кнопку само по словам «нравится», «лайк», «симпатия», по сердечку)"), lp(MATCH, WRAP, t = 12))
+            body.addView(etLikeBody, lp(MATCH, WRAP, t = 6))
+            body.addView(lbl("CSS-селектор ссылок на анкеты в поиске (пусто = приложение берёт самую многочисленную группу однотипных ссылок)"), lp(MATCH, WRAP, t = 12))
+            body.addView(etLinkSel, lp(MATCH, WRAP, t = 6))
+        } else {
         body.addView(lbl("URL лайка ({login} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etLikeUrl, lp(MATCH, WRAP, t = 6))
         body.addView(lbl("Метод лайка"), lp(MATCH, WRAP, t = 12))
@@ -589,6 +604,7 @@ open class MainActivity : Activity() {
         body.addView(etLikeBody, lp(MATCH, WRAP, t = 6))
         body.addView(lbl("URL поиска ({offset} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etSearchUrl, lp(MATCH, WRAP, t = 6))
+        }
         if (sv.id == "rambler") {
             body.addView(lbl("Дополнительные адреса поиска, по одному в строке ({offset} обязателен). Когда основной список закончится, приложение пройдёт по ним, например по вкладкам сайта «Онлайн» и «Новые». Адреса видны в диагностике после того, как нажмёшь эти вкладки во вкладке «Браузер»."), lp(MATCH, WRAP, t = 12))
             body.addView(etSearchExtra, lp(MATCH, WRAP, t = 6))
@@ -630,6 +646,16 @@ open class MainActivity : Activity() {
                         "1) Вкладка «Браузер»: войди во ВКонтакте, открой знакомства и дождись анкет. " +
                         "2) Поставь лимит 3 и жми «Запустить». В журнале должно появиться «VK Знакомства: мини-приложение загружено, токен получен». " +
                         "Сайт отдаёт ограниченное число лайков, остаток виден в ответах («осталось у сайта»)."
+                ), lp(MATCH, WRAP, t = 14)
+            )
+        }
+        if (sv.id == "beboo") {
+            body.addView(
+                lbl(
+                    "Beboo: в поиске нет ленты, поэтому приложение берёт анкеты со страницы поиска с твоими фильтрами, по очереди открывает каждую анкету и нажимает на ней лайк. " +
+                        "1) Вкладка «Браузер»: войди в Beboo, открой поиск, выбери город, возраст и т. д., скопируй адрес страницы в «Адрес поиска» выше (по умолчанию уже стоит твой). " +
+                        "2) Жми «Запустить». Темп по умолчанию 8–12 в минуту: каждая анкета открывается как страница. " +
+                        "3) Если в журнале «не нашёл кнопку лайка» или «не вижу анкет», пришли эту строку целиком: в ней снимок страницы, по нему я подберу точные селекторы."
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
@@ -1469,6 +1495,7 @@ open class MainActivity : Activity() {
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
             .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su)
             .putString("searchExtra", if (engine.svc.id == "rambler") etSearchExtra.text.toString().trim() else "")
+            .putString("bebooLinkSel", etLinkSel.text.toString().trim())
             .putString("sliceAges", etSliceAges.text.toString().trim().ifEmpty { "0" })
             .putString("onlineFirst", etOnlineFirst.text.toString().trim().filter { it.isDigit() }).apply()
         etWinFrom.setText(wf.toString())

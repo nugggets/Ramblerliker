@@ -45,3 +45,12 @@ class VkActivity : MainActivity() {
 class VkKeepAliveService : KeepAliveService() {
     override val svcId: String = "vk"
 }
+
+// Окно и служба Beboo: отдельный процесс (:beboo). Анкеты берутся из поиска с фильтрами, лайк ставится на странице самой анкеты
+class BebooActivity : MainActivity() {
+    override fun serviceId(): String = "beboo"
+}
+
+class BebooKeepAliveService : KeepAliveService() {
+    override val svcId: String = "beboo"
+}

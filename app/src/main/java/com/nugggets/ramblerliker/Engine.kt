@@ -289,6 +289,207 @@ const val AUTO_JS = """
 })();
 """
 
+// Beboo: анкеты берём из поиска с фильтрами (ссылки на анкеты), потом открываем анкету и нажимаем на ней кнопку лайка.
+// Страницу сайта не знаем заранее, поэтому ссылки и кнопка ищутся по признакам; при неудаче в журнал пишется снимок страницы.
+// Селекторы можно задать вручную в «Адреса и подсказки»
+const val BEBOO_JS = """
+(function(){
+ if(!window.__lk) return;
+ var NAV=/^\/(search|meets|messeger|messages|chat|agreement|switcher|settings|login|logout|registration|register|help|faq|rules|payment|pay|vip|gifts|visitors|favorites|blacklist|support|privacy|policy|cookie|about|contacts|partners|app|apps|download|rating|top|news|blog|forum)(\/|$)/i;
+ var BADURL=/(mc\.yandex|google|doubleclick|metrika|counter|analytics|top-fwz|tns-counter|gstatic|facebook|vk\.com\/rtrg|adriver|adfox)/i;
+ var LIMIT=/(лимит|закончил|исчерпан|превышен|только для vip|только для вип|купите vip|оформите vip)/i;
+ function vis(e){ try{ var r=e.getBoundingClientRect(); var cs=getComputedStyle(e); return r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none'; }catch(x){ return false; } }
+ function txt(e){ return ((e.tagName==='INPUT')?(e.value||''):(e.innerText||e.textContent||'')).replace(/\s+/g,' ').trim(); }
+ function body(){ return ((document.body&&(document.body.innerText||document.body.textContent))||'').replace(/\s+/g,' ').trim(); }
+ function absU(a){ try{ return new URL(a.getAttribute('href'),location.href); }catch(e){ return null; } }
+ function fire(e){
+  try{ e.scrollIntoView({block:'center'}); }catch(x){}
+  var r=e.getBoundingClientRect(), cx=r.left+r.width/2, cy=r.top+r.height/2;
+  var o={bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy};
+  ['pointerdown','mousedown','pointerup','mouseup'].forEach(function(n){
+   try{ e.dispatchEvent(n.indexOf('pointer')===0 ? new PointerEvent(n,o) : new MouseEvent(n,o)); }catch(z){}
+  });
+  e.click();
+ }
+ function anchorOf(el){
+  if(!el) return null;
+  if(el.tagName==='A'&&el.getAttribute('href')) return el;
+  try{ var c=el.closest('a[href]'); if(c) return c; }catch(e){}
+  try{ return el.querySelector('a[href]'); }catch(e){ return null; }
+ }
+ function shapeOf(u){ return u.pathname.replace(/\d+/g,'N'); }
+ // ссылки на анкеты: свой селектор, иначе самая многочисленная группа однотипных ссылок (одинаковый вид пути)
+ function links(sel){
+  var out=[], dup={}, groups={}, order=[];
+  function put(a){
+   var u=absU(a); if(!u||u.host!==location.host) return null;
+   var k=u.pathname+u.search; if(dup[k]) return null; dup[k]=1; out.push(k); return k;
+  }
+  if(sel){
+   try{ var els=document.querySelectorAll(sel); for(var i=0;i<els.length;i++){ var a=anchorOf(els[i]); if(a) put(a); } }catch(e){}
+   if(out.length) return {ids:out,diag:'селектор «'+sel+'»'};
+  }
+  var as=document.querySelectorAll('a[href]');
+  for(var j=0;j<as.length;j++){
+   var a2=as[j]; var h=a2.getAttribute('href')||'';
+   if(!h||h.charAt(0)==='#'||/^(javascript|mailto|tel):/i.test(h)) continue;
+   var u2=absU(a2); if(!u2||u2.host!==location.host) continue;
+   var p=u2.pathname; if(p==='/'||p===''||NAV.test(p)) continue;
+   try{ if(a2.closest('nav,header,footer,[class*=header],[class*=footer],[class*=menu],[class*=navbar]')) continue; }catch(e){}
+   var sh=shapeOf(u2); var g=groups[sh];
+   if(!g){ g=groups[sh]={n:0,keys:{},img:0,sample:u2.pathname+u2.search,list:[]}; order.push(sh); }
+   var key=u2.pathname+u2.search; if(g.keys[key]) continue; g.keys[key]=1; g.n++; g.list.push(a2);
+   if(a2.querySelector('img')||(a2.style&&a2.style.backgroundImage)) g.img++;
+  }
+  var best=null,bs=-1;
+  for(var q=0;q<order.length;q++){ var gg=groups[order[q]]; var sc=gg.n+gg.img*2+(order[q].indexOf('N')>=0?3:0); if(sc>bs){ bs=sc; best=order[q]; } }
+  var diag=order.map(function(s){ return s+' ×'+groups[s].n+(groups[s].img?' (с фото '+groups[s].img+')':''); }).sort().slice(0,6).join(' ; ');
+  if(!best) return {ids:[],diag:diag||'ссылок нет'};
+  var bg=groups[best]; if(bg.n<2&&best.indexOf('N')<0) return {ids:[],diag:diag};
+  for(var z=0;z<bg.list.length;z++) put(bg.list[z]);
+  return {ids:out,diag:'группа '+best+'; '+diag};
+ }
+ window.__lk.boot=function(sel){
+  try{
+   var r=links(sel);
+   var stub=''; if(!r.ids.length) stub=body().slice(0,300)||'(пустая страница)';
+   Rec.apiBatch(JSON.stringify({beboo:true,onSearch:/\/search/i.test(location.pathname),ids:r.ids,count:r.ids.length,stub:stub,diag:r.diag,url:location.href}));
+  }catch(e){ Rec.apiErr('boot',String(e)); }
+ };
+ // подгрузить следующие анкеты: кнопка «Ещё»/«Далее»/следующая страница, иначе прокрутка вниз
+ window.__lk.more=function(){
+  try{
+   var done='';
+   var cand=document.querySelectorAll('a[rel=next],[class*=next],[class*=more],[class*=Next],[class*=More],[class*=pager] a,[class*=pagin] a,button,a[href]');
+   var re=/^(ещё|еще|показать ещё|показать еще|загрузить ещё|загрузить еще|далее|следующая|вперёд|вперед|»|›|>|more|next)(\s|$)/i;
+   for(var i=0;i<cand.length&&!done;i++){
+    var e=cand[i]; if(!vis(e)) continue;
+    var t=txt(e); var rel=(e.getAttribute('rel')||'');
+    if(rel==='next'||(t.length<=25&&re.test(t))){ done=t||rel; try{ fire(e); }catch(x){ try{ e.click(); }catch(y){} } }
+   }
+   try{ window.scrollTo(0,document.documentElement.scrollHeight); window.dispatchEvent(new Event('scroll')); }catch(e){}
+  }catch(e){}
+ };
+ function hookNet(){
+  if(window.__bhook) return; window.__bhook=1; window.__bcap={on:false,list:[]};
+  function rec(url,method){ if(!window.__bcap.on||BADURL.test(String(url))) return null; var o={url:String(url),method:method||'GET',status:0,text:null}; window.__bcap.list.push(o); return o; }
+  var oF=window.fetch;
+  if(oF){ window.fetch=function(i,init){
+    var url=(typeof i==='string')?i:((i&&i.url)||''); var o=rec(url,(init&&init.method)||(i&&i.method)||'GET');
+    var p=oF.apply(this,arguments);
+    if(o){ p.then(function(r){ o.status=r.status; try{ r.clone().text().then(function(t){ o.text=String(t).slice(0,600); }); }catch(e){ o.text=''; } }).catch(function(){ o.status=-1; o.text=''; }); }
+    return p; }; }
+  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,u){ this.__bm=m; this.__bu=u; return xo.apply(this,arguments); };
+  XMLHttpRequest.prototype.send=function(b){ var x=this; var o=rec(x.__bu||'',x.__bm);
+   if(o){ x.addEventListener('loadend',function(){ o.status=x.status; var t=''; try{ t=x.responseText||''; }catch(e){} o.text=String(t).slice(0,600); }); }
+   return xs.apply(this,arguments); };
+ }
+ function attrs(e){
+  var s=(e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className)+' '+(e.id||'')+' '+(e.getAttribute('title')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('href')||'')+' '+(e.getAttribute('onclick')||'');
+  try{ for(var i=0;i<e.attributes.length;i++){ var n=e.attributes[i].name; if(n.indexOf('data-')===0) s+=' '+n+'='+e.attributes[i].value; } }catch(x){}
+  return String(s).toLowerCase();
+ }
+ var POS=/(like|heart|sympath|симпат|нравит|нравл|лайк|♥|❤|♡)/i;
+ var NEG=/(dislike|unlike|не нравит|не нравл|снять|убрать|удалить|пропустить|skip|nope|report|жалоб|блок|block|share|поделить)/i;
+ var DONE=/(^|[\s_-])(active|liked|checked|selected|done|pressed|on|voted)([\s_-]|$)/i;
+ function findBtn(sel){
+  if(sel){
+   try{ var l=document.querySelectorAll(sel); for(var i=0;i<l.length;i++){ if(vis(l[i])) return {el:l[i],liked:DONE.test(attrs(l[i]))||l[i].getAttribute('aria-pressed')==='true',how:'селектор'}; } }catch(e){}
+   return {el:null};
+  }
+  var cs=document.querySelectorAll('button,a,[role=button],[onclick],input[type=button],input[type=submit],[class*=like],[class*=Like],[class*=heart],[class*=sympath],[data-action],[data-like]');
+  var best=null,bs=0;
+  for(var j=0;j<cs.length;j++){
+   var e=cs[j]; if(!vis(e)) continue;
+   try{ if(e.closest('nav,header,footer')) continue; }catch(x){}
+   var t=txt(e); if(t.length>40) continue;
+   var a=attrs(e), all=(t+' '+a);
+   if(NEG.test(all)) continue;
+   var sc=0;
+   if(POS.test(t)) sc+=6;
+   if(POS.test(a)) sc+=4;
+   if(sc===0) continue;
+   var r=e.getBoundingClientRect(); sc-=Math.min(3,(r.width*r.height)/40000);
+   if(e.tagName==='BUTTON'||e.tagName==='A'||e.getAttribute('role')==='button') sc+=1;
+   if(sc>bs){ bs=sc; best=e; }
+  }
+  if(!best) return {el:null};
+  return {el:best,liked:DONE.test(attrs(best))||best.getAttribute('aria-pressed')==='true'||best.disabled===true,how:'признаки'};
+ }
+ function info(){
+  var n=''; try{ var h=document.querySelector('h1,[class*=userName],[class*=user-name],[class*=name],[class*=Name]'); n=h?txt(h):''; }catch(e){}
+  if(!n) n=(document.title||'').split(/[-|—,]/)[0].trim();
+  var t=body(); var m=/(\d{2})\s*(?:лет|год|года)/.exec(t); var c='';
+  var cm=/(?:лет|год|года)\s*,?\s*([А-ЯЁA-Z][^\d,|]{2,30})/.exec(t); if(cm) c=cm[1].trim();
+  return {name:n.slice(0,30),age:m?m[1]:'',city:c.slice(0,30)};
+ }
+ function snap(sel){
+  try{
+   var cs=document.querySelectorAll('button,a,[role=button],[onclick]'), out=[];
+   for(var i=0;i<cs.length&&out.length<14;i++){ var e=cs[i]; if(!vis(e)) continue; var t=txt(e).slice(0,18); var c=String(e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className).slice(0,30); out.push(e.tagName.toLowerCase()+(c?'.'+c:'')+(t?'«'+t+'»':'')); }
+   return 'url: '+location.pathname+location.search+' | заголовок: '+(document.title||'').slice(0,40)+' | кнопки: '+out.join(' ; ')+' | текст: '+body().slice(0,160);
+  }catch(e){ return 'снимок: '+e; }
+ }
+ window.__lk.like=function(login,url,method,sel){
+  try{
+   hookNet();
+   var pr=info(); var closed=false;
+   function fin(obj,http){ if(closed) return; closed=true; window.__bcap.on=false; obj._name=pr.name; obj._age=pr.age; obj._city=pr.city; Rec.apiLike2(login,http||200,JSON.stringify(obj)); }
+   if(/\/(login|auth|enter|signin|registration|reg)(\/|\?|$)/i.test(location.pathname)){ fin({status:0,auth:true,msg:'страница входа'},401); return; }
+   var tries=0;
+   (function find(){
+    var b=findBtn(sel);
+    if(!b.el){
+     if(++tries<20){ setTimeout(find,300); return; }
+     var bt=body();
+     if(LIMIT.test(bt.slice(0,400))){ fin({status:0,limit:true,msg:bt.slice(0,200)}); return; }
+     Rec.apiErr('like','не нашёл кнопку лайка на странице анкеты | '+snap(sel)); return;
+    }
+    if(b.liked){ Rec.apiErr('skip',login+' ('+(txt(b.el)||attrs(b.el).slice(0,30))+')'); return; }
+    var before=attrs(b.el), el=b.el, a=(el.tagName==='A')?el:null;
+    window.__bcap.list=[]; window.__bcap.on=true;
+    var href=a?(a.getAttribute('href')||''):'';
+    var plain=a&&href&&href.charAt(0)!=='#'&&!/^javascript:/i.test(href)&&!a.getAttribute('onclick');
+    if(plain){
+     // обычная ссылка-лайк: идём по ней сами, чтобы страница не уходила на другой адрес
+     var u=absU(a);
+     (window.__origFetch||window.fetch).call(window,u.href,{credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}})
+      .then(function(r){ var st=r.status; return r.text().then(function(t){
+        var s=String(t).slice(0,600);
+        if(st===401){ fin({status:0,auth:true,msg:s},401); return; }
+        if(LIMIT.test(s)){ fin({status:0,limit:true,msg:s}); return; }
+        fin({status:(st>=200&&st<300)?1:0,http:st,how:'ссылка '+u.pathname,text:s.slice(0,200)}); }); })
+      .catch(function(e){ Rec.apiErr('like','ссылка лайка не открылась: '+e); });
+     return;
+    }
+    fire(el);
+    var t0=Date.now();
+    (function wait(){
+     var L=window.__bcap.list, got=null;
+     for(var i=0;i<L.length;i++){ if(L[i].status!==0&&L[i].text!==null){ got=L[i]; break; } }
+     if(got){
+      if(got.status===401){ fin({status:0,auth:true,msg:got.text},401); return; }
+      if(LIMIT.test(got.text||'')){ fin({status:0,limit:true,msg:got.text}); return; }
+      fin({status:(got.status>=200&&got.status<300)?1:0,http:got.status,how:got.method+' '+got.url.slice(0,60),text:(got.text||'').slice(0,200)}); return;
+     }
+     var after=''; try{ after=attrs(el); }catch(e){}
+     var gone=!document.body.contains(el)||!vis(el);
+     if(Date.now()-t0>1200&&L.length===0&&(after!==before||gone||el.disabled)){ fin({status:1,how:'по состоянию кнопки',text:(after!==before?'класс изменился':'кнопка исчезла')}); return; }
+     var dlg=''; try{ var d=document.querySelector('[role=dialog],[class*=modal],[class*=popup],[class*=Modal],[class*=Popup]'); if(d&&vis(d)) dlg=txt(d); }catch(e){}
+     if(dlg&&LIMIT.test(dlg)){ fin({status:0,limit:true,msg:dlg.slice(0,200)}); return; }
+     if(Date.now()-t0>5000){
+      if(L.length>0){ fin({status:1,how:'запрос без ответа: '+L[0].url.slice(0,60),text:''}); return; }
+      window.__bcap.on=false; closed=true; Rec.apiErr('like','нажал «'+(txt(el)||attrs(el).slice(0,40))+'», но сайт не ответил и вид не изменился | '+snap(sel)); return;
+     }
+     setTimeout(wait,200);
+    })();
+   })();
+  }catch(e){ Rec.apiErr('like',String(e)); }
+ };
+})();
+"""
+
 const val OK_API = "https://okdating-app.ru/api/"
 
 // OK: скрипт для КАЖДОГО окна страницы (мини-приложение живёт во вложенном окне другого домена).
@@ -456,6 +657,17 @@ val SERVICES = listOf(
         "https://vkdating-app.ru/api/dating.like", "POST", "user_id={login}&meta={meta}",
         "https://vkdating-app.ru/api/dating.getRecommendedUsers", "POST", "count=20&geo={\"latitude\":55.7558,\"longitude\":37.6173}",
         50, VkActivity::class.java, VkKeepAliveService::class.java
+    ),
+    // Beboo: в поиске с фильтрами открываем каждую анкету и нажимаем на ней лайк (см. BEBOO_JS). Адрес поиска с фильтрами меняется в «Адресах и подсказках»
+    Svc(
+        "beboo", "Beboo",
+        "https://m.beboo.ru/search?status=recently&lookFor=1&f=1&countryId=104&regionId=445&townId=4465&lookFor=1&startAge=40&endAge=100&reason=0&f=0",
+        listOf("https://m.beboo.ru", "https://beboo.ru", "https://www.beboo.ru"), "beboo.ru", "liker_beboo", "_beboo",
+        listOf("https://m.beboo.ru/", "https://beboo.ru/", "https://www.beboo.ru/"), ".beboo.ru",
+        // адреса лайка у Beboo нет: лайк ставится нажатием на кнопку в анкете. Значение нужно только для проверки настроек
+        "/{login}", "GET", "",
+        "https://m.beboo.ru/search?status=recently&lookFor=1&f=1&countryId=104&regionId=445&townId=4465&lookFor=1&startAge=40&endAge=100&reason=0&f=0", "GET", "",
+        60, BebooActivity::class.java, BebooKeepAliveService::class.java
     )
 )
 
@@ -488,7 +700,7 @@ fun yearsText(a: String): String {
 
 // «Katerina, 30 лет — ищет от 29 до 40 лет»
 fun fmtProf(p: Prof): String {
-    if (p.from == "tabor" || p.from == "ok" || p.from == "love") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
+    if (p.from == "tabor" || p.from == "ok" || p.from == "love" || p.from == "beboo") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
     if (p.age.isEmpty() && p.from.isEmpty() && p.to.isEmpty() && (p.name.startsWith("фото ") || p.name.startsWith("профиль "))) return p.name
     val seek = when {
         p.from.isNotEmpty() && p.to.isNotEmpty() -> "ищет от ${p.from} до ${p.to} лет"
@@ -1065,9 +1277,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // ---------- настройки темпа ----------
     private fun fmtNum(f: Float): String = if (f == f.toInt().toFloat()) f.toInt().toString() else f.toString()
 
-    fun rateMin(): Float = cf("rateMin", DEFAULT_RATE_MIN)
+    fun rateMin(): Float = cf("rateMin", if (svc.id == "beboo") 8f else DEFAULT_RATE_MIN)
 
-    fun rateMax(): Float = cf("rateMax", DEFAULT_RATE_MAX)
+    fun rateMax(): Float = cf("rateMax", if (svc.id == "beboo") 12f else DEFAULT_RATE_MAX)
 
     // «60-80» (или одно число, если границы равны)
     fun rateText(): String =
@@ -1111,7 +1323,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         pageReady = false
         loadStartedAt = SystemClock.elapsedRealtime()
         stats.event("pageLoad")
-        w().loadUrl(svc.site)
+        bebooBootPending = false
+        bebooCur = null
+        w().loadUrl(siteUrl())
     }
 
     private fun destroyWeb() {
@@ -1127,6 +1341,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (svc.id != "rambler") view?.evaluateJavascript(HDR_JS, null)
         view?.evaluateJavascript(apiJs(svc.id != "rambler"), null)
         if (svc.id == "love") view?.evaluateJavascript(LOVE_JS, null)
+        if (svc.id == "beboo") view?.evaluateJavascript(BEBOO_JS, null)
         view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
     }
 
@@ -1204,6 +1419,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageReady = true
                 inject(view)
+                if (svc.id == "beboo") bebooPageDone(url)
                 CookieManager.getInstance().flush()
             }
         }
@@ -1924,6 +2140,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             mambaLimitsQuery()
             return
         }
+        if (svc.id == "beboo") {
+            bebooStartBatch()
+            return
+        }
         if (svc.id == "tabor" || svc.id == "love") {
             // у Табора списка нет: первые анкеты берём со страницы, дальше их присылает каждая оценка. Love.ru: страница сама ведёт ленту, мы жмём её кнопку
             waiting = true
@@ -1958,6 +2178,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun sendLike(login: String) {
         if (okLike) {
             okSend("like", okVal("likeUrl", svc.defLikeUrl), okParams(okVal("likeBody", svc.defLikeBody), login, okMeta[login] ?: "", 0L), login)
+            return
+        }
+        if (svc.id == "beboo") {
+            bebooOpenProfile(login)
             return
         }
         if (svc.id == "love") {
@@ -2118,6 +2342,27 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             h.postDelayed(tick, 2500)
             return
         }
+        if (svc.id == "beboo" && kind == "skip") {
+            // анкета уже оценена раньше: лайк не считаем, идём к следующей
+            bebooSkips++
+            bebooMiss = 0
+            if (bebooSkips <= 3 || bebooSkips % 25 == 0) logMsg("↷ Beboo: анкета уже с лайком, пропускаю: $msg (всего пропущено: $bebooSkips)")
+            scheduleNext(quick = true)
+            return
+        }
+        if (svc.id == "beboo" && kind == "like") {
+            // на одной анкете кнопки может не быть (закрытая, удалена): пропускаем, а подряд 6 таких считаем ошибкой
+            bebooMiss++
+            if (bebooMiss <= 2 || bebooMiss % 10 == 0) logMsg("⚠ Beboo: на анкете не получилось поставить лайк ($bebooMiss подряд): ${msg.take(900)}")
+            stats.request("like", false, -1L, "like: ${msg.take(40)}")
+            if (bebooMiss >= 6) {
+                bebooMiss = 0
+                handleError("Beboo: 6 анкет подряд без лайка. ${msg.take(300)}")
+            } else {
+                scheduleNext(quick = true)
+            }
+            return
+        }
         if (kind.startsWith("notready")) {
             // страница ещё не готова: это не ошибка, пробуем снова через 2 с
             if (kind == "notready-like" && msg.isNotEmpty()) queue.addFirst(msg)
@@ -2221,6 +2466,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Итог лайка: 0 успех, 24 вход слетел, остальное ошибка. Rambler: по полю errno, как раньше
     private fun likeCode(j: JSONObject, text: String, status: Int): Int {
         if (svc.id == "rambler") return j.optInt("errno", -1)
+        if (svc.id == "beboo") {
+            if (status == 401 || status == 403 || j.optBoolean("auth", false)) return 24
+            if (status !in 200..299) return status
+            return if (j.optInt("status", 0) == 1) 0 else -1
+        }
         if (svc.id == "love") {
             if (status == 401 || status == 403) return 24
             if (status !in 200..299) return status
@@ -2251,6 +2501,166 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (t.isNotEmpty() && t != "0" && t != "false" && t != "[]" && t != "{}") return -1
         }
         return 0
+    }
+
+    // ---------- Beboo: поиск с фильтрами -> страница анкеты -> кнопка лайка ----------
+    private var bebooCur: String? = null
+    private var bebooLikeSent = false
+    private var bebooBootPending = false
+    private var bebooMoreTries = 0
+    private var bebooMiss = 0
+    private var bebooSkips = 0
+    private var bebooBoots = 0
+    private var bebooEmpty = 0
+
+    private fun bebooBase(): String = "https://m.beboo.ru"
+
+    // адрес поиска с фильтрами (настройка «URL поиска»)
+    private fun searchPageUrl(): String = (prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl).ifBlank { svc.defSearchUrl }
+
+    private fun siteUrl(): String = if (svc.id == "beboo") searchPageUrl() else svc.site
+
+    private fun bebooLinkSel(): String = (prefs.getString("bebooLinkSel", "") ?: "").trim()
+
+    private fun bebooLikeSel(): String = (prefs.getString("likeBody", svc.defLikeBody) ?: "").trim()
+
+    private fun bebooOnSearch(url: String?): Boolean = url != null && url.contains("beboo.ru/search")
+
+    // очередь пуста: нужна страница поиска. Если открыта другая страница (анкета), открываем поиск заново
+    private fun bebooStartBatch() {
+        waiting = true
+        h.removeCallbacks(wd)
+        h.postDelayed(wd, 30000)
+        if (!bebooOnSearch(web?.url)) {
+            bebooBootPending = true
+            pageReady = false
+            w().loadUrl(searchPageUrl())
+            // дальше onPageFinished запустит сбор ссылок; если страница не загрузится, сработает таймер ожидания
+            return
+        }
+        bebooRunBoot()
+    }
+
+    private fun bebooRunBoot() {
+        bebooBootPending = false
+        bebooBoots++
+        w().evaluateJavascript("if(window.__lk&&window.__lk.boot){window.__lk.boot(${JSONObject.quote(bebooLinkSel())});}else{Rec.apiErr('notready-batch','');}", null)
+    }
+
+    // подгрузить следующие анкеты на странице поиска (кнопка «Ещё», следующая страница или прокрутка)
+    private fun bebooMore() {
+        waiting = true
+        h.removeCallbacks(wd)
+        h.postDelayed(wd, 30000)
+        bebooBootPending = true
+        w().evaluateJavascript("if(window.__lk&&window.__lk.more){window.__lk.more();}", null)
+        h.postDelayed({ if (bebooBootPending && running) bebooRunBoot() }, 3000)
+    }
+
+    private fun bebooPageDone(url: String?) {
+        if (!running) return
+        if (bebooBootPending && bebooOnSearch(url)) {
+            h.postDelayed({ if (bebooBootPending && running) bebooRunBoot() }, 1200)
+            return
+        }
+        // открыта страница анкеты, на которую мы шли: через секунду ищем кнопку лайка
+        val cur = bebooCur
+        if (cur != null && !bebooLikeSent && !bebooOnSearch(url) && url != null && url.contains("beboo.ru")) {
+            bebooLikeSent = true
+            h.postDelayed({
+                if (running && bebooCur == cur) {
+                    w().evaluateJavascript("if(window.__lk&&window.__lk.like){window.__lk.like(${JSONObject.quote(cur)},'','',${JSONObject.quote(bebooLikeSel())});}else{Rec.apiErr('notready-like',${JSONObject.quote(cur)});}", null)
+                }
+            }, 1000)
+        }
+    }
+
+    private fun bebooOpenProfile(path: String) {
+        bebooCur = path
+        bebooLikeSent = false
+        waiting = true
+        likeSentAt = SystemClock.elapsedRealtime()
+        h.removeCallbacks(wd)
+        h.postDelayed(wd, 40000)
+        pageReady = false
+        val abs = if (path.startsWith("http")) path else bebooBase() + (if (path.startsWith("/")) path else "/$path")
+        w().loadUrl(abs)
+    }
+
+    private fun onBebooBoot(text: String) {
+        try {
+            val j = JSONObject(text)
+            val ids = j.optJSONArray("ids")
+            var added = 0
+            if (ids != null) {
+                for (i in 0 until ids.length()) {
+                    val id = ids.optString(i)
+                    if (id.isNotEmpty() && seen.add(id)) {
+                        queue.addLast(id)
+                        added++
+                    }
+                }
+            }
+            val count = j.optInt("count", 0)
+            if ((bebooBoots <= 2 || (added == 0 && count > 0 && bebooMoreTries == 0)) && prefs.getBoolean("logSearch", true)) {
+                logMsg("🔎 Beboo: на странице ссылок на анкеты: $count, новых: $added, в очереди: ${queue.size}. Как нашёл: ${j.optString("diag").take(300)}")
+            }
+            if (!j.optBoolean("onSearch", true)) {
+                // страница не поиск (отправило на вход или другую страницу)
+                bebooEmpty++
+                if (bebooEmpty >= 3) {
+                    bebooEmpty = 0
+                    handleError("Beboo: вместо поиска открыта страница ${j.optString("url").take(80)}. Войди в аккаунт во вкладке «Браузер» и открой поиск")
+                    return
+                }
+                loadSite()
+                nextAt = SystemClock.elapsedRealtime() + 4000
+                h.postDelayed(tick, 4000)
+                return
+            }
+            if (added > 0) {
+                bebooEmpty = 0
+                if (queue.size < 25 && bebooMoreTries < 6) {
+                    bebooMoreTries++
+                    bebooMore()
+                    return
+                }
+                bebooMoreTries = 0
+                scheduleNext(quick = true)
+                return
+            }
+            if (queue.isNotEmpty()) {
+                bebooMoreTries = 0
+                scheduleNext(quick = true)
+                return
+            }
+            if (bebooMoreTries < 10) {
+                bebooMoreTries++
+                bebooMore()
+                return
+            }
+            bebooMoreTries = 0
+            val stub = j.optString("stub", "")
+            if (stub.isNotEmpty() && looksLikeLimit(stub)) {
+                logMsg("⚠ Beboo вместо анкет показывает сообщение: «${stub.take(200)}»")
+                siteLimitPause("Лайки у сайта закончились", stub)
+                return
+            }
+            if (count == 0) {
+                handleError("Beboo: на странице поиска не вижу анкет (нет входа или другая вёрстка). Страница: ${stub.take(200)}. Как искал: ${j.optString("diag").take(200)}")
+                return
+            }
+            // анкеты в поиске все уже лайкнуты в этом заходе: ждём, пока появятся новые
+            seen.clear()
+            val fp = ci("feedPauseMin", 45)
+            val d = (fp * 60000L * (0.67 + rnd.nextDouble() * 0.66)).toLong().coerceAtLeast(60000L)
+            logMsg("⏸ Beboo: новых анкет в поиске нет, начну заново через ${d / 60000} мин (фильтры можно поменять в «Адресах и подсказках»)")
+            feedWaitUntil = SystemClock.elapsedRealtime() + d
+            nextAt = SystemClock.elapsedRealtime() + d
+            h.postDelayed(tick, d)
+        } catch (ex: Exception) {
+            handleError("Beboo: страница поиска не разобрана: ${text.take(100)}")
+        }
     }
 
     private var loveMiss = 0
@@ -2437,6 +2847,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (svc.id == "love") {
             stats.request("boot", true, bl, "")
             onLoveBoot(text)
+            return
+        }
+        if (svc.id == "beboo") {
+            stats.request("boot", true, bl, "")
+            onBebooBoot(text)
             return
         }
         try {
@@ -2626,6 +3041,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 if (svc.id == "love" && loveSticky) loadSite()
                 if (probing) probeSuccess()
                 if (svc.id == "love") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "love", "", j.optString("_city"))
+                if (svc.id == "beboo") {
+                    profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "beboo", "", j.optString("_city"))
+                    bebooMiss = 0
+                    if (sessLikes < 3) logMsg("   Beboo: лайк засчитан (${j.optString("how")})")
+                }
                 if (svc.id == "tabor") {
                     val u = j.optJSONObject("user")
                     val nid = u?.optString("id") ?: ""

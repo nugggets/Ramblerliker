@@ -73,7 +73,7 @@ class HubActivity : Activity() {
         val titles = LinearLayout(this)
         titles.orientation = LinearLayout.VERTICAL
         titles.addView(tv("Liker", 30f, Pal.TEXT, true))
-        titles.addView(tv("Rambler · Mamba · Tabor · OK · Love.ru в одном приложении", 13f, Pal.MUTED))
+        titles.addView(tv("Rambler · Mamba · Tabor · OK · Love.ru · VK · Beboo в одном приложении", 13f, Pal.MUTED))
         head.addView(titles, lp(0, WRAP, 1f))
         head.addView(tv("v" + versionName(), 12f, Pal.MUTED))
         col.addView(head, lp(MATCH, WRAP, b = 16))
