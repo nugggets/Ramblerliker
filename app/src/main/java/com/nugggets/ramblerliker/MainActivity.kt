@@ -625,7 +625,7 @@ open class MainActivity : Activity() {
         if (sv.id == "vk") {
             body.addView(
                 lbl(
-                    "VK Знакомства: пока подключены только вход и запись запросов, лайки сами не ставятся. " +
+                    "VK Знакомства: пока подключены только вход и запись запросов (теперь и внутри окна самого мини-приложения), лайки сами не ставятся. " +
                         "1) Вкладка «Браузер»: войди во ВКонтакте и открой знакомства. " +
                         "2) Пролистай несколько анкет и поставь 2–3 лайка вручную. " +
                         "3) Открой диагностику и пришли блок «Запись из «Браузера»» целиком: по нему я подключу ленту и лайк."
@@ -1081,7 +1081,7 @@ open class MainActivity : Activity() {
         }
         web.addJavascriptInterface(UiBridge(), "Rec")
         // OK: знакомства открываются во вложенном окне (iframe), поэтому запись запросов ставим во все окна страницы
-        if (engine.svc.id == "ok") {
+        if (engine.svc.id == "ok" || engine.svc.id == "vk") {
             try {
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                     WebViewCompat.addDocumentStartJavaScript(web, HOOK_JS, setOf("*"))
