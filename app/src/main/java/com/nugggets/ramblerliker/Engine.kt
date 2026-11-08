@@ -1449,6 +1449,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
         logMsg("▶ Старт. Своего лимита нет (останавливает только лимит сайта), темп ${rateText()} лайков в минуту, окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)} МСК (сейчас ${mskNow()} МСК), уже сегодня ${prefs.getInt("count", 0)}")
         offset = resumeOffset()
+        sliceOff = null
+        sliceDone = null
         prefs.edit().putBoolean("wantRunning", true).apply()
         try {
             app.startForegroundService(Intent(app, svc.keepCls))
@@ -2230,6 +2232,84 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
     }
 
+    // Возрасты идут по очереди: взяли пачку анкет из одного возраста, следующую берём из другого (порядок случайный).
+    // Сначала круг со статусом «недавно активные» по всем возрастам, потом круг по всем анкетам.
+    private var sliceOff: LongArray? = null
+    private var sliceDone: BooleanArray? = null
+
+    private fun sliceTag(): String {
+        val ages = sliceAges()
+        if (svc.id != "rambler" || ages.isEmpty()) return ""
+        val per = slicePer()
+        val cur = searchIdx % (per * slicePhases())
+        val age = ages[(cur % per) / searchUrls().size]
+        val st = if (slicePhases() == 2) (if (cur / per == 0) ", недавно активные" else ", все") else ""
+        return " [возраст $age$st]"
+    }
+
+    private fun rotateSlices(added: Int, got: Int, newOff: Long) {
+        val total = sliceTotal()
+        val per = slicePer()
+        val phases = slicePhases()
+        if (sliceOff == null || sliceOff!!.size != total) {
+            sliceOff = LongArray(total)
+            sliceDone = BooleanArray(total)
+        }
+        val offs = sliceOff!!
+        val done = sliceDone!!
+        val cur = searchIdx % total
+        // если взяли только часть анкет, этот возраст продолжится с первой невзятой, а не с конца пачки
+        offs[cur] = newOff
+        val ended = !hasMore || got == 0
+        if (ended && added == 0) done[cur] = true
+        if (!ended && added == 0) {
+            // в этом возрасте на этой странице всё лайкнуто, листаю его дальше
+            scheduleNext(quick = true)
+            return
+        }
+        val ph = cur / per
+        var next = -1
+        var phase = ph
+        while (phase < phases && next < 0) {
+            val start = if (phase == ph) (cur % per) + 1 else 0
+            for (p in 0 until per) {
+                val idx = phase * per + (start + p) % per
+                if (!done[idx]) {
+                    next = idx
+                    break
+                }
+            }
+            if (next < 0) phase++
+        }
+        if (next >= 0) {
+            if (next / per != ph && phases == 2) logMsg("➡ Круг «недавно активные» пройден, дальше круг по всем анкетам")
+            searchIdx = next
+            offset = offs[next]
+            hasMore = true
+            scheduleNext(quick = true)
+            return
+        }
+        // все возрасты во всех кругах пройдены
+        logMsg("📊 Круг по возрастам закончен: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded")
+        sliceOff = null
+        sliceDone = null
+        searchIdx = 0
+        ageOrder = null
+        offset = 0
+        seen.clear()
+        hasMore = true
+        scanTotal = 0
+        scanLiked = 0
+        scanDup = 0
+        scanAdded = 0
+        val fp = ci("feedPauseMin", 45)
+        val d = (fp * 60000L * (0.67 + rnd.nextDouble() * 0.66)).toLong().coerceAtLeast(60000L)
+        logMsg("⏸ Анкеты во всех возрастах закончились. Начну заново через ${d / 60000} мин (фильтры можно поменять на сайте или нажми «Проверить новые анкеты»)")
+        feedWaitUntil = SystemClock.elapsedRealtime() + d
+        nextAt = SystemClock.elapsedRealtime() + d
+        h.postDelayed(tick, d)
+    }
+
     private fun onBatch(text: String) {
         h.removeCallbacks(wd)
         waiting = false
@@ -2253,6 +2333,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 return
             }
             var added = 0
+            // с возрастами по очереди: из каждого возраста берём по одной анкете (настройка perAge), дальше берём другой возраст
+            val rot = svc.id == "rambler" && sliceAges().isNotEmpty()
+            val perAge = prefs.getInt("perAge", 1).coerceAtLeast(1)
+            var taken = 0
+            var firstFresh = -1
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val lg = if (mamba) mambaPhotoId(o) else if (ok) o.optString("id") else o.optString("login")
@@ -2277,8 +2362,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 }
                 scanTotal++
                 if (already) scanLiked++
-                val fresh = !already && seen.add(lg)
-                if (!already && !fresh) scanDup++
+                val cand = !already && !seen.contains(lg)
+                val fresh = cand && (!rot || taken < perAge) && seen.add(lg)
+                if (cand && firstFresh < 0) firstFresh = i
+                if (fresh) taken++
+                if (!already && !cand) scanDup++
                 if (fresh) {
                     queue.addLast(lg)
                     if (ok) okMeta[lg] = o.optJSONObject("extra")?.optString("meta") ?: ""
@@ -2310,7 +2398,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (okMeta.size > 3000) okMeta.keys.retainAll(queue.toSet())
             // в журнал пишем не каждый пустой пролистанный блок
             if (prefs.getBoolean("logSearch", true) && (added > 0 || emptyStreak <= 2 || emptyStreak % 5 == 0)) {
-                logMsg("🔎 Поиск: позиции $startOff–$offset, новых для лайка: $added, в очереди: ${queue.size}" +
+                logMsg("🔎 Поиск${sliceTag()}: позиции $startOff–$offset, новых для лайка: $added, в очереди: ${queue.size}" +
                     (if (ok && j.has("remaining")) ", осталось у сайта: ${j.optInt("remaining", -1)}" else "") +
                     if (added == 0) " (все уже лайкнуты, листаю дальше)" else "")
             }
@@ -2321,6 +2409,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (ok && arr.length() == 0 && j.has("remaining") && j.optInt("remaining", 1) <= 0) {
                 likesLeft = 0
                 siteLimitPause("Лимит сайта исчерпан (лента пуста, осталось 0)", text)
+                return
+            }
+            if (svc.id == "rambler" && sliceAges().isNotEmpty()) {
+                rotateSlices(added, arr.length(), if (firstFresh >= 0) startOff + firstFresh else offset)
                 return
             }
             if (added == 0 && !hasMore && resumedScan) {
