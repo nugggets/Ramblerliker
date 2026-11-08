@@ -320,7 +320,7 @@ class HubActivity : Activity() {
             val f = java.text.SimpleDateFormat("dd.MM HH:mm:ss", java.util.Locale("ru"))
             f.timeZone = java.util.TimeZone.getTimeZone("Europe/Moscow")
             val sb = StringBuilder()
-            sb.append("=== ОБЩАЯ ДИАГНОСТИКА Rambler Liker v${versionName()} ===\n")
+            sb.append("=== ОБЩАЯ ДИАГНОСТИКА Liker v${versionName()} ===\n")
             sb.append("собрана ${f.format(java.util.Date())} МСК\n")
             sb.append("телефон: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})\n")
             try {

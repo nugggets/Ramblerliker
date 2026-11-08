@@ -1756,7 +1756,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // Срезы по возрасту: поиск сайта отдаёт максимум ~1000 анкет, поэтому ищем по одному возрасту, от старшего к младшему.
     // Настройка «sliceAges»: "75" = с 75 вниз до нижней границы фильтра сайта, "75-50" = с 75 до 50, пусто/0 = выключено
-    private fun sliceAges(): List<Int> {
+    private fun ageRange(): List<Int> {
         if (svc.id != "rambler") return emptyList()
         val raw = (prefs.getString("sliceAges", "75") ?: "75").trim()
         if (raw.isEmpty() || raw == "0") return emptyList()
@@ -1768,6 +1768,33 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return (hi downTo lo).toList()
     }
 
+    // порядок возрастов случайный (перемешивается в начале каждого круга), чтобы не лайкать один возраст подряд
+    private var ageOrder: List<Int>? = null
+    private var ageOrderKey = ""
+    private fun sliceAges(): List<Int> {
+        val base = ageRange()
+        if (base.isEmpty()) return base
+        if (!prefs.getBoolean("sliceRandom", true)) return base
+        val key = (prefs.getString("sliceAges", "75") ?: "") + "|" + base.size + "|" + base.first() + "|" + base.last()
+        if (ageOrder == null || ageOrderKey != key) {
+            ageOrder = base.shuffled(rnd)
+            ageOrderKey = key
+        }
+        return ageOrder!!
+    }
+
+    // значение параметра online для «недавно активные»: из настройки, а если пусто, то то, что сам сайт слал при выборе этого фильтра
+    private fun onlineFirst(): String {
+        if (svc.id != "rambler") return ""
+        val v = (prefs.getString("onlineFirst", "") ?: "").trim().ifEmpty { prefs.getString("onlineLearned", "") ?: "" }.ifEmpty { "2" }
+        return if (v.isNotEmpty() && v.all { it.isDigit() } && v != "0") v else ""
+    }
+
+    private fun withParam(body: String, key: String, value: String): String {
+        val re = Regex("(^|&)" + key + "=[^&]*")
+        return if (re.containsMatchIn(body)) body.replace(re, "$1$key=$value") else "$body&$key=$value"
+    }
+
     private fun slicedBody(body: String, age: Int): String {
         var b = body
         b = if (Regex("(^|&)bage=\\d+").containsMatchIn(b)) b.replace(Regex("(^|&)bage=\\d+"), "$1bage=$age") else "$b&bage=$age"
@@ -1776,7 +1803,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     // всего срезов = адреса поиска × возрасты
-    private fun sliceTotal(): Int = searchUrls().size * maxOf(1, sliceAges().size)
+    private fun slicePer(): Int = searchUrls().size * maxOf(1, sliceAges().size)
+    private fun slicePhases(): Int = if (onlineFirst().isNotEmpty()) 2 else 1
+    private fun sliceTotal(): Int = slicePer() * slicePhases()
 
     private fun fetchBatch() {
         if (svc.id == "mamba" && probing && !mambaLimChecked) {
@@ -1799,8 +1828,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         var body = searchBody()
         val urls = searchUrls()
         val ages = sliceAges()
-        val si = searchIdx % (urls.size * maxOf(1, ages.size))
+        val per = urls.size * maxOf(1, ages.size)
+        val phases = slicePhases()
+        val si0 = searchIdx % (per * phases)
+        val phase = si0 / per
+        val si = si0 % per
         if (ages.isNotEmpty()) body = slicedBody(body, ages[si / urls.size])
+        if (phases == 2) body = withParam(body, "online", if (phase == 0) onlineFirst() else "0")
         val surl = urls[si % urls.size].replace("{offset}", offset.toString())
         val smeth = prefs.getString("searchMethod", svc.defSearchMethod) ?: svc.defSearchMethod
         val sbod = body.replace("{offset}", offset.toString())
@@ -2319,7 +2353,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 }
                 val nUrls = sliceTotal()
                 val sAges = sliceAges()
-                val ageTxt = if (sAges.isNotEmpty()) " (возраст ${sAges[(searchIdx % nUrls) / searchUrls().size]})" else ""
+                val per0 = slicePer()
+                val ph0 = (searchIdx % nUrls) / per0
+                val ageTxt = (if (sAges.isNotEmpty()) " (возраст ${sAges[((searchIdx % nUrls) % per0) / searchUrls().size]}" else " (") +
+                    (if (slicePhases() == 2) (if (sAges.isNotEmpty()) ", " else "") + (if (ph0 == 0) "недавно активные" else "все") else "") + ")"
                 logMsg("📊 Итог прохода по поиску ${searchIdx + 1} из $nUrls$ageTxt: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded. Поля ответа сайта: $extra" +
                     (if (svc.id == "rambler") ". Значения own_like в списке: $ownDist, примеры «уже лайкнутых»: $ownSamples" else ""))
                 ownDist.clear()
@@ -2336,6 +2373,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                         return
                     }
                     searchIdx = 0
+                    ageOrder = null
                 }
                 scanTotal = 0
                 scanLiked = 0

@@ -147,6 +147,7 @@ open class MainActivity : Activity() {
     private lateinit var etSearchUrl: EditText
     private lateinit var etSearchExtra: EditText
     private lateinit var etSliceAges: EditText
+    private lateinit var etOnlineFirst: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
     private var geoOrigin = ""
     private lateinit var web: WebView
@@ -575,6 +576,7 @@ open class MainActivity : Activity() {
         etLikeBody = inp("тело запроса лайка (если есть)", prefs.getString("likeBody", sv.defLikeBody) ?: sv.defLikeBody, false)
         etSearchUrl = inp("URL поиска", prefs.getString("searchUrl", sv.defSearchUrl) ?: sv.defSearchUrl, false)
         etSearchExtra = inp("доп. адреса поиска", prefs.getString("searchExtra", "") ?: "", false)
+        etOnlineFirst = inp("online для «недавно активные»", prefs.getString("onlineFirst", "") ?: "", false)
         etSliceAges = inp("срезы по возрасту", prefs.getString("sliceAges", "75") ?: "75", false)
         etSearchExtra.isSingleLine = false
         etSearchExtra.minLines = 3
@@ -592,6 +594,8 @@ open class MainActivity : Activity() {
             body.addView(etSearchExtra, lp(MATCH, WRAP, t = 6))
             body.addView(lbl("Срезы по возрасту: поиск сайта отдаёт максимум ~1000 анкет, поэтому приложение ищет по одному возрасту, от старшего к младшему. «75» = с 75 вниз до нижней границы твоего фильтра на сайте, «75-50» = с 75 до 50, «0» = выключить."), lp(MATCH, WRAP, t = 12))
             body.addView(etSliceAges, lp(MATCH, WRAP, t = 6))
+            body.addView(lbl("Сначала «недавно активные»: число, которое сайт шлёт в параметре online при выбранном фильтре «недавно активные» (на сайте во вкладке «Браузер» выбери этот фильтр один раз, приложение запомнит число само). Пусто = запомненное, а если его нет, то 2 (так сайт слал в твоей записи). 0 = выключить этот круг. Сначала идёт круг по всем возрастам с этим статусом, потом круг по всем анкетам. Возраста идут в случайном порядке."), lp(MATCH, WRAP, t = 12))
+            body.addView(etOnlineFirst, lp(MATCH, WRAP, t = 6))
         }
         body.addView(
             pill("URL лайка по умолчанию", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { etLikeUrl.setText(sv.defLikeUrl) },
@@ -1146,6 +1150,9 @@ open class MainActivity : Activity() {
                 // запоминаем фильтры поиска, которые шлёт сам сайт
                 if (engine.svc.id == "rambler" && o.optString("u").contains("/api/a-search") && o.optString("p").contains("pol=")) {
                     prefs.edit().putString("sbody", o.optString("p")).apply()
+                    Regex("(?:^|&)online=(\\d+)").find(o.optString("p"))?.groupValues?.get(1)?.let { ov ->
+                        if (ov != "0") prefs.edit().putString("onlineLearned", ov).apply()
+                    }
                 }
                 if (engine.svc.id == "mamba" && o.optString("u").contains("/api/graphql") && o.optString("p").contains("\"operationName\":\"Rating\"")) {
                     // фильтры ленты (возраст, пол, город) берём из настроек самого сайта
@@ -1391,7 +1398,8 @@ open class MainActivity : Activity() {
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
             .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su)
             .putString("searchExtra", if (engine.svc.id == "rambler") etSearchExtra.text.toString().trim() else "")
-            .putString("sliceAges", etSliceAges.text.toString().trim().ifEmpty { "0" }).apply()
+            .putString("sliceAges", etSliceAges.text.toString().trim().ifEmpty { "0" })
+            .putString("onlineFirst", etOnlineFirst.text.toString().trim().filter { it.isDigit() }).apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
         etLimit.setText(lim.toString())
