@@ -295,9 +295,9 @@ const val AUTO_JS = """
 const val BEBOO_JS = """
 (function(){
  if(!window.__lk) return;
- var NAV=/^\/(search|meets|messeger|messages|chat|agreement|switcher|settings|login|logout|registration|register|help|faq|rules|payment|pay|vip|gifts|visitors|favorites|blacklist|support|privacy|policy|cookie|about|contacts|partners|app|apps|download|rating|top|news|blog|forum)(\/|$)/i;
+ var NAV=/^\/(search|meets|messeger|messages|chat|agreement|switcher|settings|login|logout|registration|register|help|faq|rules|payment|pay|vip|gifts|visitors|favorites|blacklist|support|privacy|policy|cookie|about|contacts|partners|app|apps|download|rating|top|news|blog|forum|paid|buy)(\/|$)/i;
  var BADURL=/(mc\.yandex|google|doubleclick|metrika|counter|analytics|top-fwz|tns-counter|gstatic|facebook|vk\.com\/rtrg|adriver|adfox)/i;
- var LIMIT=/(лимит|закончил|исчерпан|превышен|только для vip|только для вип|купите vip|оформите vip)/i;
+ var LIMIT=/(\/paid\/|лимит|закончил|исчерпан|превышен|только для vip|только для вип|купите vip|оформите vip)/i;
  function vis(e){ try{ var r=e.getBoundingClientRect(); var cs=getComputedStyle(e); return r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none'; }catch(x){ return false; } }
  function txt(e){ return ((e.tagName==='INPUT')?(e.value||''):(e.innerText||e.textContent||'')).replace(/\s+/g,' ').trim(); }
  function body(){ return ((document.body&&(document.body.innerText||document.body.textContent))||'').replace(/\s+/g,' ').trim(); }
@@ -403,6 +403,7 @@ const val BEBOO_JS = """
   for(var j=0;j<cs.length;j++){
    var e=cs[j]; if(!vis(e)) continue;
    try{ if(e.closest('nav,header,footer')) continue; }catch(x){}
+   if(e.tagName==='A'){ var uu=absU(e); if(uu&&(NAV.test(uu.pathname)||uu.pathname==='/')) continue; }
    var t=txt(e); if(t.length>40) continue;
    var a=attrs(e), all=(t+' '+a);
    if(NEG.test(all)) continue;
@@ -422,6 +423,8 @@ const val BEBOO_JS = """
   if(!n) n=(document.title||'').split(/[-|—,]/)[0].trim();
   var t=body(); var m=/(\d{2})\s*(?:лет|год|года)/.exec(t); var c='';
   var cm=/(?:лет|год|года)\s*,?\s*([А-ЯЁA-Z][^\d,|]{2,30})/.exec(t); if(cm) c=cm[1].trim();
+  var ma=/^(.*?),\s*(\d{2})$/.exec(n);
+  if(ma){ n=ma[1]; if(!m) m=[0,ma[2]]; }
   return {name:n.slice(0,30),age:m?m[1]:'',city:c.slice(0,30)};
  }
  function snap(sel){
@@ -439,6 +442,7 @@ const val BEBOO_JS = """
    if(/\/(login|auth|enter|signin|registration|reg)(\/|\?|$)/i.test(location.pathname)){ fin({status:0,auth:true,msg:'страница входа'},401); return; }
    var tries=0;
    (function find(){
+    if(/^\/paid\//.test(location.pathname)){ fin({status:0,limit:true,msg:'VIP-страница вместо анкеты: '+location.pathname}); return; }
     var b=findBtn(sel);
     if(!b.el){
      if(++tries<20){ setTimeout(find,300); return; }
@@ -450,7 +454,7 @@ const val BEBOO_JS = """
     var before=attrs(b.el), el=b.el, a=(el.tagName==='A')?el:null;
     window.__bcap.list=[]; window.__bcap.on=true;
     var href=a?(a.getAttribute('href')||''):'';
-    var plain=a&&href&&href.charAt(0)!=='#'&&!/^javascript:/i.test(href)&&!a.getAttribute('onclick');
+    var plain=a&&href&&href.charAt(0)!=='#'&&!/^javascript:/i.test(href)&&!a.getAttribute('onclick')&&/(like|sympath|accept|vote)/i.test(href);
     if(plain){
      // обычная ссылка-лайк: идём по ней сами, чтобы страница не уходила на другой адрес
      var u=absU(a);
@@ -459,6 +463,7 @@ const val BEBOO_JS = """
         var s=String(t).slice(0,600);
         if(st===401){ fin({status:0,auth:true,msg:s},401); return; }
         if(LIMIT.test(s)){ fin({status:0,limit:true,msg:s}); return; }
+        if(s.trim().charAt(0)==='<'&&s.length>300){ fin({status:0,http:st,how:'ссылка вернула страницу, а не лайк',text:s.slice(0,100)}); return; }
         fin({status:(st>=200&&st<300)?1:0,http:st,how:'ссылка '+u.pathname,text:s.slice(0,200)}); }); })
       .catch(function(e){ Rec.apiErr('like','ссылка лайка не открылась: '+e); });
      return;
@@ -473,6 +478,7 @@ const val BEBOO_JS = """
       if(LIMIT.test(got.text||'')){ fin({status:0,limit:true,msg:got.text}); return; }
       fin({status:(got.status>=200&&got.status<300)?1:0,http:got.status,how:got.method+' '+got.url.slice(0,60),text:(got.text||'').slice(0,200)}); return;
      }
+     if(/^\/paid\//.test(location.pathname)){ fin({status:0,limit:true,msg:'VIP-страница после лайка: '+location.pathname}); return; }
      var after=''; try{ after=attrs(el); }catch(e){}
      var gone=!document.body.contains(el)||!vis(el);
      if(Date.now()-t0>1200&&L.length===0&&(after!==before||gone||el.disabled)){ fin({status:1,how:'по состоянию кнопки',text:(after!==before?'класс изменился':'кнопка исчезла')}); return; }
@@ -2557,8 +2563,22 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         h.postDelayed({ if (bebooBootPending && running) bebooRunBoot() }, 3000)
     }
 
+    // после нажатия сайт увёл страницу на VIP («больше симпатий только с VIP»): это лимит, а не лайк
+    private fun bebooPaywall(url: String) {
+        bebooCur = null
+        bebooLikeSent = true
+        h.removeCallbacks(wd)
+        waiting = false
+        logMsg("⚠ Beboo: сайт открыл страницу VIP (${url.take(70)}): симпатии закончились")
+        handleError("Beboo: лимит симпатий, сайт предлагает VIP: ${url.take(120)}", "limit " + url)
+    }
+
     private fun bebooPageDone(url: String?) {
         if (!running) return
+        if (bebooCur != null && url != null && url.contains("beboo.ru/paid/")) {
+            bebooPaywall(url)
+            return
+        }
         if (bebooBootPending && bebooOnSearch(url)) {
             h.postDelayed({ if (bebooBootPending && running) bebooRunBoot() }, 1200)
             return
@@ -3044,7 +3064,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 if (svc.id == "beboo") {
                     profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "beboo", "", j.optString("_city"))
                     bebooMiss = 0
-                    if (sessLikes < 3) logMsg("   Beboo: лайк засчитан (${j.optString("how")})")
+                    if (sessLikes < 3) logMsg("   Beboo: лайк засчитан (${j.optString("how")}; ответ: ${j.optString("text").take(120)})")
                 }
                 if (svc.id == "tabor") {
                     val u = j.optJSONObject("user")
