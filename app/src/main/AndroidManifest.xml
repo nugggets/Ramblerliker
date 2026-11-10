@@ -80,6 +80,26 @@
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard" />
 
         <activity
+            android:name=".LoveMailActivity"
+            android:process=":lmail"
+            android:label="Love.Mail.Ru Liker"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard" />
+
+        <activity
+            android:name=".LovePlanetActivity"
+            android:process=":lplanet"
+            android:label="LovePlanet Liker"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard" />
+
+        <activity
             android:name=".LoveActivity"
             android:process=":love"
             android:label="Love.ru Liker"
@@ -171,6 +191,28 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Постоянная работа автолайков Beboo в фоне" />
+        </service>
+
+        <service
+            android:name=".LoveMailKeepAliveService"
+            android:process=":lmail"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync|specialUse|location">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Постоянная работа автолайков Love.Mail.Ru в фоне" />
+        </service>
+
+        <service
+            android:name=".LovePlanetKeepAliveService"
+            android:process=":lplanet"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync|specialUse|location">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Постоянная работа автолайков LovePlanet в фоне" />
         </service>
 
         <service

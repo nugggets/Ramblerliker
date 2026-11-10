@@ -54,3 +54,20 @@ class BebooActivity : MainActivity() {
 class BebooKeepAliveService : KeepAliveService() {
     override val svcId: String = "beboo"
 }
+
+// Love.Mail.Ru (страница оценок) и LovePlanet: лента на самой странице, жмём кнопку лайка по признакам
+class LoveMailActivity : MainActivity() {
+    override fun serviceId(): String = "lmail"
+}
+
+class LoveMailKeepAliveService : KeepAliveService() {
+    override val svcId: String = "lmail"
+}
+
+class LovePlanetActivity : MainActivity() {
+    override fun serviceId(): String = "lplanet"
+}
+
+class LovePlanetKeepAliveService : KeepAliveService() {
+    override val svcId: String = "lplanet"
+}

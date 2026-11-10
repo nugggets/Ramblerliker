@@ -583,18 +583,21 @@ open class MainActivity : Activity() {
         etSearchExtra.isSingleLine = false
         etSearchExtra.minLines = 3
         etSearchExtra.maxLines = 8
-        if (sv.id == "beboo") {
+        val pageSv = sv.id == "beboo" || sv.id == "lmail" || sv.id == "lplanet"
+        if (pageSv) {
             // у Beboo нет адреса лайка: поля скрыты, но нужны для сохранения. В поле тела лайка хранится селектор кнопки лайка
             etLikeUrl.visibility = View.GONE
             etLikeMethod.visibility = View.GONE
             body.addView(etLikeUrl)
             body.addView(etLikeMethod)
-            body.addView(lbl("Адрес поиска с фильтрами (город, возраст и т. д. выбери на сайте и вставь сюда адрес страницы поиска)"), lp(MATCH, WRAP, t = 12))
+            body.addView(lbl(if (sv.id == "beboo") "Адрес поиска с фильтрами (город, возраст и т. д. выбери на сайте и вставь сюда адрес страницы поиска)" else "Адрес страницы, где ставятся лайки/оценки (открой её во вкладке «Браузер», скопируй адрес и вставь сюда)"), lp(MATCH, WRAP, t = 12))
             body.addView(etSearchUrl, lp(MATCH, WRAP, t = 6))
-            body.addView(lbl("CSS-селектор кнопки лайка на странице анкеты (пусто = приложение ищет кнопку само по словам «нравится», «лайк», «симпатия», по сердечку)"), lp(MATCH, WRAP, t = 12))
+            body.addView(lbl("CSS-селектор кнопки лайка (пусто = приложение ищет кнопку само по словам «нравится», «лайк», «симпатия», по сердечку)"), lp(MATCH, WRAP, t = 12))
             body.addView(etLikeBody, lp(MATCH, WRAP, t = 6))
-            body.addView(lbl("CSS-селектор ссылок на анкеты в поиске (пусто = приложение берёт самую многочисленную группу однотипных ссылок)"), lp(MATCH, WRAP, t = 12))
-            body.addView(etLinkSel, lp(MATCH, WRAP, t = 6))
+            if (sv.id == "beboo") {
+                body.addView(lbl("CSS-селектор ссылок на анкеты в поиске (пусто = приложение берёт самую многочисленную группу однотипных ссылок)"), lp(MATCH, WRAP, t = 12))
+                body.addView(etLinkSel, lp(MATCH, WRAP, t = 6))
+            }
         } else {
         body.addView(lbl("URL лайка ({login} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etLikeUrl, lp(MATCH, WRAP, t = 6))
@@ -656,6 +659,17 @@ open class MainActivity : Activity() {
                         "1) Вкладка «Браузер»: войди в Beboo, открой поиск, выбери город, возраст и т. д., скопируй адрес страницы в «Адрес поиска» выше (по умолчанию уже стоит твой). " +
                         "2) Жми «Запустить». Темп по умолчанию 8–12 в минуту: каждая анкета открывается как страница. " +
                         "3) Если в журнале «не нашёл кнопку лайка» или «не вижу анкет», пришли эту строку целиком: в ней снимок страницы, по нему я подберу точные селекторы."
+                ), lp(MATCH, WRAP, t = 14)
+            )
+        }
+        if (sv.id == "lmail" || sv.id == "lplanet") {
+            body.addView(
+                lbl(
+                    "${sv.title}: лента находится на самой странице, приложение держит её открытой и по очереди жмёт кнопку лайка (ищет по словам «нравится», «лайк», «оценить», по сердечку). " +
+                        "1) Вкладка «Браузер»: войди в аккаунт и открой страницу, где ты вручную ставишь лайки. " +
+                        "2) Скопируй её адрес в «Адрес страницы» выше. " +
+                        "3) Жми «Запустить». Темп по умолчанию 8–12 в минуту. " +
+                        "4) Если в журнале «не нашёл кнопку лайка», пришли эту строку целиком: в ней снимок страницы с названиями кнопок, по нему я задам точный селектор."
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
@@ -1361,7 +1375,7 @@ open class MainActivity : Activity() {
         pageProbe { probe ->
             try {
                 val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                val t = engine.diagText(recSection(24, 700, 500), true) + "\n=== Страница во вкладке «Браузер» ===\n" + probe + "\n"
+                val t = engine.diagText(recSection(12, 350, 250), true) + "\n=== Страница во вкладке «Браузер» ===\n" + probe + "\n"
                 cb.setPrimaryClip(ClipData.newPlainText("diag", t))
                 toast("Диагностика скопирована (${t.length / 1000} тыс. символов), вставь её мне в чат")
             } catch (e: Exception) {

@@ -73,7 +73,7 @@ class HubActivity : Activity() {
         val titles = LinearLayout(this)
         titles.orientation = LinearLayout.VERTICAL
         titles.addView(tv("Liker", 30f, Pal.TEXT, true))
-        titles.addView(tv("Rambler · Mamba · Tabor · OK · Love.ru · VK · Beboo в одном приложении", 13f, Pal.MUTED))
+        titles.addView(tv("Rambler · Mamba · Tabor · OK · Love.ru · VK · Beboo · Love.Mail.Ru · LovePlanet в одном приложении", 13f, Pal.MUTED))
         head.addView(titles, lp(0, WRAP, 1f))
         head.addView(tv("v" + versionName(), 12f, Pal.MUTED))
         col.addView(head, lp(MATCH, WRAP, b = 16))
@@ -322,36 +322,30 @@ class HubActivity : Activity() {
             val sb = StringBuilder()
             sb.append("=== ОБЩАЯ ДИАГНОСТИКА Liker v${versionName()} ===\n")
             sb.append("собрана ${f.format(java.util.Date())} МСК\n")
-            // устройство и система: батарея, сеть, память, WebView, ограничения, почему система убивала процессы
+            // устройство кратко: батарея, сеть, память, WebView и почему система убивала процессы приложения
             try {
-                sb.append(envText(this))
+                sb.append(compactEnv(envText(this)))
             } catch (e: Exception) {
-                sb.append("устройство и система: не удалось собрать (${e.message})\n")
+                sb.append("устройство: не удалось собрать (${e.message})\n")
             }
-            val cj = Common.read(this)
-            sb.append("общие настройки: ${if (Common.on(this)) "ВКЛЮЧЕНЫ" else "выключены"} $cj\n")
+            sb.append("общие настройки: ${if (Common.on(this)) "ВКЛЮЧЕНЫ" else "выключены"} ${Common.read(this)}\n")
             sb.append("\n=== СВОДКА ===\n")
             for (sv in SERVICES) {
                 val s = readStatus(this, sv)
-                sb.append("${sv.title}: ${if (!s.exists) "ещё не запускался" else if (s.running) "РАБОТАЕТ" else "остановлен"}")
-                if (s.exists) sb.append(", ${s.verdict}, лайков сегодня ${s.count}, за сессию ${s.sess}, ошибок ${s.errors}, следующее: ${s.next}")
-                sb.append("\n")
+                if (!s.exists) continue
+                sb.append("${sv.title}: ${if (s.running) "РАБОТАЕТ" else "остановлен"}, ${s.verdict}, лайков сегодня ${s.count}, за сессию ${s.sess}, ошибок ${s.errors}, следующее: ${s.next}\n")
             }
-            sb.append("\n=== СРАВНЕНИЕ САЙТОВ (накопленная статистика, подробности ниже в разделах сайтов) ===\n")
+            val never = SERVICES.filter { !readStatus(this, it).exists }.joinToString(", ") { it.title }
+            if (never.isNotEmpty()) sb.append("не запускались: $never\n")
             for (sv in SERVICES) {
-                val sf = java.io.File(filesDir, "stats_${sv.id}.json")
-                sb.append("${sv.title}: ")
-                sb.append(if (sf.exists()) Stats(sf, sv.title).compactLine() else "статистика ещё не копилась")
-                sb.append("\n")
-            }
-            for (sv in SERVICES) {
+                if (!readStatus(this, sv).exists) continue
                 val file = java.io.File(filesDir, "diag_${sv.id}.txt")
                 sb.append("\n\n############ ${sv.title} ############\n")
                 if (file.exists()) {
                     sb.append("(данные на ${f.format(java.util.Date(file.lastModified()))} МСК)\n")
                     sb.append(file.readText())
                 } else {
-                    sb.append("нет данных: сайт ещё не запускался\n")
+                    sb.append("нет данных\n")
                 }
             }
             val cb = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager

@@ -801,3 +801,59 @@ fun exitReasonsText(ctx: Context): String {
         "завершения процессов: не удалось прочитать (${e.message})"
     }
 }
+
+
+// Короткая версия автоанализа: выводы, частые ошибки, причины неудач, лимиты, последние сессии. Остальное (по дням, по часам, события) не нужно
+fun compactReport(rep: String): String {
+    val out = StringBuilder()
+    var name = ""
+    var lines = ArrayList<String>()
+    fun flush() {
+        if (name.isEmpty()) return
+        val keep: List<String>? = when {
+            name.startsWith("Выводы") -> lines
+            name.startsWith("Частые ошибки") -> lines.take(6)
+            name.startsWith("Лимит сайта по истории") -> lines.take(5)
+            name.startsWith("Запросы к сайту") -> lines.filter { it.startsWith("лайк:") || it.startsWith("поиск:") || it.startsWith("первая страница:") || it.startsWith("причины") || it.startsWith("фактический") }.take(6)
+            name.startsWith("Сессии") -> lines.takeLast(4)
+            else -> null
+        }
+        if (keep != null && keep.isNotEmpty()) {
+            out.append("--- ").append(name.substringBefore(" (")).append(" ---\n")
+            for (l in keep) out.append(l.take(220)).append("\n")
+        }
+        lines = ArrayList()
+        name = ""
+    }
+    for (l in rep.split("\n")) {
+        if (l.startsWith("--- ") && l.trimEnd().endsWith(" ---")) {
+            flush()
+            name = l.trim().removePrefix("--- ").removeSuffix(" ---")
+        } else if (name.isNotEmpty() && l.isNotBlank()) {
+            lines.add(l)
+        }
+    }
+    flush()
+    return out.toString()
+}
+
+// Короткое описание устройства: без списка завершений процессов, места, корзины ожидания и прочих мелочей
+fun compactEnv(env: String): String {
+    val keep = listOf("телефон:", "приложение:", "WebView:", "память телефона:", "фоновая работа", "батарея:", "энергосбережение:", "сеть:", "уведомления разрешены")
+    val sb = StringBuilder()
+    var kills = 0
+    for (l in env.split("\n")) {
+        if (l.startsWith("  ")) {
+            // завершения процессов: оставляем только процессы приложения и не больше 3
+            if (l.contains("nugggets") && kills < 3) {
+                sb.append(l.take(170)).append("\n")
+                kills++
+            }
+        } else if (l.startsWith("завершения процессов")) {
+            sb.append("завершения процессов приложения (свежие сверху):\n")
+        } else if (keep.any { l.startsWith(it) }) {
+            sb.append(l.take(200)).append("\n")
+        }
+    }
+    return sb.toString()
+}

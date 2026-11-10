@@ -390,7 +390,7 @@ const val BEBOO_JS = """
   try{ for(var i=0;i<e.attributes.length;i++){ var n=e.attributes[i].name; if(n.indexOf('data-')===0) s+=' '+n+'='+e.attributes[i].value; } }catch(x){}
   return String(s).toLowerCase();
  }
- var POS=/(like|heart|sympath|симпат|нравит|нравл|лайк|♥|❤|♡)/i;
+ var POS=/(like|heart|sympath|симпат|нравит|нравл|лайк|оцен|rate|vote|♥|❤|♡)/i;
  var NEG=/(dislike|unlike|не нравит|не нравл|снять|убрать|удалить|пропустить|skip|nope|report|жалоб|блок|block|share|поделить)/i;
  var DONE=/(^|[\s_-])(active|liked|checked|selected|done|pressed|on|voted)([\s_-]|$)/i;
  function findBtn(sel){
@@ -404,6 +404,7 @@ const val BEBOO_JS = """
    var e=cs[j]; if(!vis(e)) continue;
    try{ if(e.closest('nav,header,footer')) continue; }catch(x){}
    if(e.tagName==='A'){ var uu=absU(e); if(uu&&(NAV.test(uu.pathname)||uu.pathname==='/')) continue; }
+   if(window.__bcard&&e.tagName==='A'){ var hr=e.getAttribute('href')||''; if(hr&&hr.charAt(0)!=='#'&&!/^javascript:/i.test(hr)&&!/(like|sympath|accept|vote|rate)/i.test(hr)&&!e.getAttribute('onclick')) continue; }
    var t=txt(e); if(t.length>40) continue;
    var a=attrs(e), all=(t+' '+a);
    if(NEG.test(all)) continue;
@@ -674,6 +675,26 @@ val SERVICES = listOf(
         "/{login}", "GET", "",
         "https://m.beboo.ru/search?status=recently&lookFor=1&f=1&countryId=104&regionId=445&townId=4465&lookFor=1&startAge=40&endAge=100&reason=0&f=0", "GET", "",
         60, BebooActivity::class.java, BebooKeepAliveService::class.java
+    ),
+    // Love.Mail.Ru: страница оценок (рейтинг). Лента на самой странице, лайк ставится нажатием кнопки, кнопку приложение ищет по признакам (см. BEBOO_JS)
+    Svc(
+        "lmail", "Love.Mail.Ru",
+        "https://love.mail.ru/ru/rating",
+        listOf("https://love.mail.ru", "https://mail.ru", "https://auth.mail.ru", "https://account.mail.ru"), "mail.ru", "liker_lmail", "_lmail",
+        listOf("https://love.mail.ru/", "https://mail.ru/", "https://auth.mail.ru/", "https://account.mail.ru/"), ".mail.ru",
+        "/{login}", "GET", "",
+        "https://love.mail.ru/ru/rating", "GET", "",
+        70, LoveMailActivity::class.java, LoveMailKeepAliveService::class.java
+    ),
+    // LovePlanet: адрес страницы, где ставятся лайки/оценки, задаётся в «Адресах и подсказках» (по умолчанию главная сайта)
+    Svc(
+        "lplanet", "LovePlanet",
+        "https://loveplanet.ru/",
+        listOf("https://loveplanet.ru", "https://www.loveplanet.ru", "https://m.loveplanet.ru"), "loveplanet.ru", "liker_lplanet", "_lplanet",
+        listOf("https://loveplanet.ru/", "https://www.loveplanet.ru/", "https://m.loveplanet.ru/"), ".loveplanet.ru",
+        "/{login}", "GET", "",
+        "https://loveplanet.ru/", "GET", "",
+        80, LovePlanetActivity::class.java, LovePlanetKeepAliveService::class.java
     )
 )
 
@@ -1166,71 +1187,118 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         "?"
     }
 
-    // Весь текст диагностики одного сайта. recOverride: запись браузера в нужном размере (иначе берётся сохранённая короткая)
+    // Весь текст диагностики одного сайта (короткий: то, что нужно для разбора). recOverride: запись браузера, её дают только при ручном «Копировать диагностику»
     fun diagText(recOverride: String? = null, withEnv: Boolean = false): String {
         val sb = StringBuilder()
-        sb.append("=== Диагностика ${svc.title} v${verName()} ===\n")
+        sb.append("=== ${svc.title} v${verName()} ===\n")
         sb.append(statusText()).append("\n")
-        // автоанализ по накопленной истории: лимиты, сброс, запросы, ошибки, стабильность, выводы
         try {
             val winMs = prefs.getLong("siteWinMs", 0L).let { if (it > 0L) it else svc.limitWindowMs }
-            sb.append("\n").append(stats.report(rateMin(), rateMax(), winMs, siteMax(), ci("winTo", DEFAULT_WIN_TO) - ci("winFrom", DEFAULT_WIN_FROM)))
+            val rep = compactReport(stats.report(rateMin(), rateMax(), winMs, siteMax(), ci("winTo", DEFAULT_WIN_TO) - ci("winFrom", DEFAULT_WIN_FROM)))
+            if (rep.isNotEmpty()) sb.append("\n").append(rep)
         } catch (e: Exception) {
             sb.append("\nавтоанализ не собрался: ${e.message}\n")
         }
-        sb.append("\n=== Состояние движка и страницы ===\n").append(engineState()).append("\n")
-        if (withEnv) sb.append("\n=== Устройство и система ===\n").append(envText(app))
-        sb.append("\n=== Все настройки сайта (как сохранены, без cookie) ===\n").append(prefsDump()).append("\n")
-        sb.append("доп. настройки: в час ${ci("maxHour", 0)}, дневной лимит ${ci("dayCap", 0)}, перерыв ${ci("breakEvery", 0)} лайков на ${ci("breakMin", 0)} мин, дни ${cs("days", "1234567")}, ошибок подряд ${ci("maxErr", 3)}, только Wi-Fi ${cb("wifiOnly", false)}, уведомления ${prefs.getBoolean("alerts", true)}\n")
-        sb.append("паузы: после ошибок ${ci("errPauseMin", 0)} мин (0 = нарастающая), анкеты закончились ${ci("feedPauseMin", 45)} мин, после неудачного входа ${ci("authPauseMin", 30)} мин, проверка сброса лимита ${probeText()}\n")
-        sb.append("общие настройки: ${if (commonOn()) "ВКЛЮЧЕНЫ" else "выключены"}\n")
-        sb.append("лимит приложения: ${prefs.getInt("limit", DEFAULT_LIMIT)}, окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)}, темп ${rateText()}\n")
-        sb.append("адрес лайка: ${prefs.getString("likeUrl", svc.defLikeUrl)} ${prefs.getString("likeBody", svc.defLikeBody)}\n")
-        sb.append("адрес ленты: ${prefs.getString("searchUrl", svc.defSearchUrl)}\n")
-        sb.append("служебное: перезагрузок страницы Love $loveReloads (залипает: $loveSticky), ошибок подряд $rowErr, всего $errors, проверка лимита идёт: $probing\n")
-        if (svc.id == "love") sb.append("снимок залипшей страницы Love (первый случай): ${prefs.getString("lastStick", "ещё не было")}\n")
-        sb.append("\n=== Последний отказ сайта (сохраняется между перезапусками) ===\n").append(prefs.getString("lastLimitEvt", "ещё не было") ?: "ещё не было").append("\n")
+        sb.append("\n=== Состояние ===\n").append(engineState())
+        if (withEnv) sb.append("\n=== Устройство ===\n").append(compactEnv(envText(app)))
+        sb.append("настройки: ").append(keySettings()).append("\n")
+        val le = prefs.getString("lastLimitEvt", "") ?: ""
+        if (le.isNotEmpty()) sb.append("последний отказ по лимиту: ").append(maskSecrets(le).take(350)).append("\n")
+        if (svc.id == "love") sb.append("снимок залипшей страницы Love: ${(prefs.getString("lastStick", "ещё не было") ?: "").take(300)}\n")
         try {
-            sb.append("\n=== Запросы службы (последние) ===\n").append(trace.toList().takeLast(25).joinToString("\n")).append("\n")
+            val tr = trace.toList()
+            val bad = tr.filter { t -> listOf("HTTP 4", "HTTP 5", "ошиб", "Failed", "errno").any { t.contains(it) } }.takeLast(3)
+            val last = tr.takeLast(3)
+            sb.append("\n=== Запросы к сайту (последние 3 и последние неудачные) ===\n")
+            for (t in (bad + last).distinct()) sb.append(maskSecrets(t).take(260)).append("\n")
         } catch (e: Exception) {
         }
-        val r = maskSecrets(recOverride ?: recText)
-        if (r.isNotEmpty()) sb.append("\n").append(r)
+        if (recOverride != null) {
+            val r = maskSecrets(recOverride)
+            if (r.isNotEmpty()) sb.append("\n").append(r)
+        }
         try {
-            sb.append("\n=== Журнал (последние 60) ===\n").append(logs.toList().takeLast(60).joinToString("\n"))
+            sb.append("\n=== Журнал (последние события, повторы свёрнуты) ===\n").append(compactLog(logs.toList().takeLast(120), 28))
         } catch (e: Exception) {
         }
         return sb.toString()
     }
 
-    // Всё, что движок знает о себе прямо сейчас: процесс, скрытая страница, лента, сессия, счётчики
+    // Подряд идущие однотипные строки журнала сворачиваем в одну: «(×5) последняя строка»
+    private fun compactLog(lines: List<String>, max: Int): String {
+        val out = ArrayList<String>()
+        var lastKey = ""
+        var cnt = 0
+        for (raw in lines) {
+            val l = raw.trim()
+            val body = if (l.length > 16) l.substring(16) else l
+            val key = body.replace(Regex("[0-9]+"), "#").take(22)
+            if (key == lastKey && out.isNotEmpty()) {
+                cnt++
+                out[out.size - 1] = "(×$cnt) " + l.take(240)
+            } else {
+                lastKey = key
+                cnt = 1
+                out.add(l.take(240))
+            }
+        }
+        return out.takeLast(max).joinToString("\n")
+    }
+
+    // Только важные настройки: темп, окно, лимиты, паузы и адреса, если они отличаются от стандартных
+    private fun keySettings(): String {
+        val p = ArrayList<String>()
+        p.add("темп ${rateText()}/мин")
+        p.add("окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)}")
+        p.add("лимит приложения ${prefs.getInt("limit", DEFAULT_LIMIT)}")
+        p.add("общие настройки ${if (commonOn()) "вкл" else "выкл"}")
+        p.add("паузы: ошибки ${ci("errPauseMin", 0)}, анкеты кончились ${ci("feedPauseMin", 45)}, вход ${ci("authPauseMin", 30)}, проба лимита ${probeText()}")
+        val lu = prefs.getString("likeUrl", svc.defLikeUrl) ?: ""
+        val su = prefs.getString("searchUrl", svc.defSearchUrl) ?: ""
+        val lb = prefs.getString("likeBody", svc.defLikeBody) ?: ""
+        if (pageSvc()) {
+            p.add("адрес страницы: ${maskSecrets(su).take(140)}")
+            if (lb.isNotBlank()) p.add("селектор кнопки лайка: ${lb.take(80)}")
+            val ls = prefs.getString("bebooLinkSel", "") ?: ""
+            if (ls.isNotBlank()) p.add("селектор ссылок: ${ls.take(80)}")
+        } else {
+            if (lu != svc.defLikeUrl || lb != svc.defLikeBody) p.add("адрес лайка изменён: ${maskSecrets(lu).take(100)} $lb")
+            if (su != svc.defSearchUrl) p.add("адрес ленты изменён: ${maskSecrets(su).take(100)}")
+        }
+        val mh = ci("maxHour", 0); if (mh > 0) p.add("в час $mh")
+        val dc = ci("dayCap", 0); if (dc > 0) p.add("в день $dc")
+        if (cb("wifiOnly", false)) p.add("только Wi-Fi")
+        return p.joinToString("; ")
+    }
+
+    // Состояние движка кратко: процесс, страница, лента, сессия
     private fun engineState(): String {
         val sb = StringBuilder()
-        sb.append(procLine()).append("\n")
+        sb.append(procLine().take(200)).append("\n")
         try {
             val wv = web
             if (wv == null) {
                 sb.append("скрытая страница: закрыта\n")
             } else {
-                sb.append("скрытая страница: ${maskSecrets(wv.url ?: "?").take(160)}, загружена: $pageReady, на сайте: ${onSite(wv.url)}, ждём ответ: $waiting\n")
-                sb.append("браузер страницы: ${wv.settings.userAgentString.take(200)}\n")
+                sb.append("скрытая страница: ${maskSecrets(wv.url ?: "?").take(130)}, загружена: $pageReady, на сайте: ${onSite(wv.url)}, ждём ответ: $waiting\n")
             }
         } catch (e: Exception) {
             sb.append("скрытая страница: не удалось прочитать (${e.message})\n")
         }
         try {
             val ck = collectCookies()
-            sb.append("cookie сайта: ${ck.size}${if (ck.isEmpty()) "" else " (" + ck.entries.joinToString(", ") { it.key + ":" + it.value.length } + ")"}, сессия сохранена ${if (lastCookieSave > 0L) "${(SystemClock.elapsedRealtime() - lastCookieSave) / 60000L} мин назад" else "в этом запуске ещё не сохранялась"}, автовход: ${autoFlag()}, входов восстановлено: $loginRestoredCount\n")
+            sb.append("cookie: ${ck.size}, сессия сохранена ${if (lastCookieSave > 0L) "${(SystemClock.elapsedRealtime() - lastCookieSave) / 60000L} мин назад" else "в этом запуске ещё не сохранялась"}, автовход: ${autoFlag()}\n")
         } catch (e: Exception) {
         }
-        sb.append("лента: смещение $offset, есть ещё: $hasMore, срез поиска ${searchIdx + 1}, пустых блоков подряд $emptyStreak, в очереди ${queue.size}, запомнено анкет ${seen.size}, ")
+        sb.append("лента: в очереди ${queue.size}, запомнено ${seen.size}, пустых блоков подряд $emptyStreak, ")
         sb.append("пауза ленты ${if (feedWaitUntil > SystemClock.elapsedRealtime()) "${(feedWaitUntil - SystemClock.elapsedRealtime()) / 60000L} мин" else "нет"}\n")
         sb.append("сессия: лайков $sessLikes, ${if (running) "идёт ${(SystemClock.elapsedRealtime() - sessStart) / 60000L} мин" else "остановлена"}, последний лайк ")
         sb.append(if (lastLikeAt > 0L) "${(SystemClock.elapsedRealtime() - lastLikeAt) / 1000L} с назад" else "в этой сессии ещё не было")
-        sb.append(", лайков в окне лимита ${winCount()}, лимит сайта по факту ${siteMax()}, окно началось ")
-        val ws = prefs.getLong("winStartAt", 0L)
-        sb.append(if (ws > 0L) "${(System.currentTimeMillis() - ws) / 60000L} мин назад" else "не началось").append("\n")
-        sb.append("прочее: уровень пауз после ошибок $errLevel, неудач входа подряд $authFails, пропусков errno=11 $soft11, проверок лимита вручную/по расписанию: ${if (probeAuto) "по расписанию" else "вручную"} (последняя ${if (lastProbeAt > 0L) "${(System.currentTimeMillis() - lastProbeAt) / 60000L} мин назад" else "не было"})\n")
+        sb.append(", в окне лимита ${winCount()} из ${siteMax()}\n")
+        sb.append("ошибок подряд $rowErr, уровень пауз $errLevel, неудач входа $authFails")
+        if (svc.id == "love") sb.append(", перезагрузок страницы $loveReloads (залипает: $loveSticky)")
+        if (probing) sb.append(", идёт проверка лимита")
+        sb.append("\n")
         return sb.toString()
     }
 
@@ -1283,9 +1351,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // ---------- настройки темпа ----------
     private fun fmtNum(f: Float): String = if (f == f.toInt().toFloat()) f.toInt().toString() else f.toString()
 
-    fun rateMin(): Float = cf("rateMin", if (svc.id == "beboo") 8f else DEFAULT_RATE_MIN)
+    fun rateMin(): Float = cf("rateMin", if (pageSvc()) 8f else DEFAULT_RATE_MIN)
 
-    fun rateMax(): Float = cf("rateMax", if (svc.id == "beboo") 12f else DEFAULT_RATE_MAX)
+    fun rateMax(): Float = cf("rateMax", if (pageSvc()) 12f else DEFAULT_RATE_MAX)
 
     // «60-80» (или одно число, если границы равны)
     fun rateText(): String =
@@ -1347,7 +1415,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (svc.id != "rambler") view?.evaluateJavascript(HDR_JS, null)
         view?.evaluateJavascript(apiJs(svc.id != "rambler"), null)
         if (svc.id == "love") view?.evaluateJavascript(LOVE_JS, null)
-        if (svc.id == "beboo") view?.evaluateJavascript(BEBOO_JS, null)
+        if (cardSvc()) view?.evaluateJavascript("window.__bcard=true;", null)
+        if (pageSvc()) view?.evaluateJavascript(BEBOO_JS, null)
         view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
     }
 
@@ -1425,7 +1494,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageReady = true
                 inject(view)
-                if (svc.id == "beboo") bebooPageDone(url)
+                if (svc.id == "beboo") bebooPageDone(url) else if (cardSvc()) cardPageDone(url)
                 CookieManager.getInstance().flush()
             }
         }
@@ -2146,6 +2215,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             mambaLimitsQuery()
             return
         }
+        if (cardSvc()) {
+            cardStartBatch()
+            return
+        }
         if (svc.id == "beboo") {
             bebooStartBatch()
             return
@@ -2184,6 +2257,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun sendLike(login: String) {
         if (okLike) {
             okSend("like", okVal("likeUrl", svc.defLikeUrl), okParams(okVal("likeBody", svc.defLikeBody), login, okMeta[login] ?: "", 0L), login)
+            return
+        }
+        if (cardSvc()) {
+            cardClick(login)
             return
         }
         if (svc.id == "beboo") {
@@ -2348,22 +2425,41 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             h.postDelayed(tick, 2500)
             return
         }
-        if (svc.id == "beboo" && kind == "skip") {
-            // анкета уже оценена раньше: лайк не считаем, идём к следующей
+        if (pageSvc() && kind == "skip") {
+            // кнопка уже в состоянии «лайк стоит»
             bebooSkips++
             bebooMiss = 0
-            if (bebooSkips <= 3 || bebooSkips % 25 == 0) logMsg("↷ Beboo: анкета уже с лайком, пропускаю: $msg (всего пропущено: $bebooSkips)")
+            if (bebooSkips <= 3 || bebooSkips % 25 == 0) logMsg("↷ ${svc.title}: лайк уже стоит, пропускаю: $msg (всего пропущено: $bebooSkips)")
+            if (cardSvc()) {
+                // лента не сдвинулась: после трёх таких подряд открываем страницу заново, после трёх перезагрузок останавливаемся
+                cardSkips++
+                if (cardSkips >= 3) {
+                    cardSkips = 0
+                    cardReloads++
+                    queue.clear()
+                    if (cardReloads >= 3) {
+                        cardReloads = 0
+                        handleError("${svc.title}: после перезагрузок на странице всё те же карточки с уже стоящим лайком. Проверь адрес ленты в «Адресах и подсказках»")
+                    } else {
+                        cardStartBatch(force = true)
+                    }
+                    return
+                }
+            }
             scheduleNext(quick = true)
             return
         }
-        if (svc.id == "beboo" && kind == "like") {
-            // на одной анкете кнопки может не быть (закрытая, удалена): пропускаем, а подряд 6 таких считаем ошибкой
+        if (pageSvc() && kind == "like") {
+            // не нашли кнопку или сайт не ответил: пропускаем, а подряд 6 таких считаем ошибкой
             bebooMiss++
-            if (bebooMiss <= 2 || bebooMiss % 10 == 0) logMsg("⚠ Beboo: на анкете не получилось поставить лайк ($bebooMiss подряд): ${msg.take(900)}")
+            if (bebooMiss <= 2 || bebooMiss % 10 == 0) logMsg("⚠ ${svc.title}: лайк не поставлен ($bebooMiss подряд): ${msg.take(900)}")
             stats.request("like", false, -1L, "like: ${msg.take(40)}")
             if (bebooMiss >= 6) {
                 bebooMiss = 0
-                handleError("Beboo: 6 анкет подряд без лайка. ${msg.take(300)}")
+                handleError("${svc.title}: 6 раз подряд без лайка. ${msg.take(300)}")
+            } else if (cardSvc() && bebooMiss == 3) {
+                queue.clear()
+                cardStartBatch(force = true)
             } else {
                 scheduleNext(quick = true)
             }
@@ -2472,7 +2568,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Итог лайка: 0 успех, 24 вход слетел, остальное ошибка. Rambler: по полю errno, как раньше
     private fun likeCode(j: JSONObject, text: String, status: Int): Int {
         if (svc.id == "rambler") return j.optInt("errno", -1)
-        if (svc.id == "beboo") {
+        if (pageSvc()) {
             if (status == 401 || status == 403 || j.optBoolean("auth", false)) return 24
             if (status !in 200..299) return status
             return if (j.optInt("status", 0) == 1) 0 else -1
@@ -2509,6 +2605,83 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return 0
     }
 
+    // ---------- Love.Mail.Ru и LovePlanet: лента на самой странице ----------
+    private fun pageSvc(): Boolean = svc.id == "beboo" || svc.id == "lmail" || svc.id == "lplanet"
+    private fun cardSvc(): Boolean = svc.id == "lmail" || svc.id == "lplanet"
+    private var cardPending = false
+    private var cardSkips = 0
+    private var cardReloads = 0
+    private var cardSeq = 0
+    private var cardCur: String? = null
+
+    private fun cardOnFeed(url: String?): Boolean {
+        if (url == null) return false
+        return try {
+            val a = android.net.Uri.parse(url)
+            val b = android.net.Uri.parse(searchPageUrl())
+            a.host == b.host && (a.path ?: "").trimEnd('/').startsWith((b.path ?: "").trimEnd('/'))
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // очередь пуста: убеждаемся, что открыта страница ленты (или открываем её заново) и кладём метки «карточка N»
+    private fun cardStartBatch(force: Boolean = false) {
+        waiting = true
+        h.removeCallbacks(wd)
+        h.postDelayed(wd, 30000)
+        if (force || !cardOnFeed(web?.url)) {
+            cardPending = true
+            pageReady = false
+            w().loadUrl(searchPageUrl())
+            return
+        }
+        cardFill()
+    }
+
+    private fun cardFill() {
+        cardPending = false
+        h.removeCallbacks(wd)
+        waiting = false
+        repeat(30) {
+            cardSeq++
+            queue.addLast("карточка $cardSeq")
+        }
+        scheduleNext(quick = true)
+    }
+
+    private fun cardClick(token: String) {
+        if (!cardOnFeed(web?.url)) {
+            queue.clear()
+            cardStartBatch()
+            return
+        }
+        cardCur = token
+        waiting = true
+        likeSentAt = SystemClock.elapsedRealtime()
+        h.removeCallbacks(wd)
+        h.postDelayed(wd, 30000)
+        w().evaluateJavascript("if(window.__lk&&window.__lk.like){window.__lk.like(${JSONObject.quote(token)},'','',${JSONObject.quote(bebooLikeSel())});}else{Rec.apiErr('notready-like',${JSONObject.quote(token)});}", null)
+    }
+
+    private fun cardPageDone(url: String?) {
+        if (!running) return
+        if (cardCur != null && url != null && (url.contains("/paid/") || url.contains("/vip"))) {
+            bebooPaywall(url)
+            return
+        }
+        if (cardPending && cardOnFeed(url)) {
+            h.postDelayed({ if (cardPending && running) cardFill() }, 1800)
+            return
+        }
+        // страница перезагрузилась сразу после нажатия: ответ скрипта потерян, лайк не засчитываем
+        if (cardCur != null && waiting && !cardPending && SystemClock.elapsedRealtime() - likeSentAt > 600) {
+            val cur = cardCur
+            cardCur = null
+            onApiErr("like", "после нажатия страница перезагрузилась ($cur): ${url?.take(80)}")
+        }
+    }
+
     // ---------- Beboo: поиск с фильтрами -> страница анкеты -> кнопка лайка ----------
     private var bebooCur: String? = null
     private var bebooLikeSent = false
@@ -2524,7 +2697,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // адрес поиска с фильтрами (настройка «URL поиска»)
     private fun searchPageUrl(): String = (prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl).ifBlank { svc.defSearchUrl }
 
-    private fun siteUrl(): String = if (svc.id == "beboo") searchPageUrl() else svc.site
+    private fun siteUrl(): String = if (pageSvc()) searchPageUrl() else svc.site
 
     private fun bebooLinkSel(): String = (prefs.getString("bebooLinkSel", "") ?: "").trim()
 
@@ -2566,11 +2739,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // после нажатия сайт увёл страницу на VIP («больше симпатий только с VIP»): это лимит, а не лайк
     private fun bebooPaywall(url: String) {
         bebooCur = null
+        cardCur = null
         bebooLikeSent = true
         h.removeCallbacks(wd)
         waiting = false
-        logMsg("⚠ Beboo: сайт открыл страницу VIP (${url.take(70)}): симпатии закончились")
-        handleError("Beboo: лимит симпатий, сайт предлагает VIP: ${url.take(120)}", "limit " + url)
+        logMsg("⚠ ${svc.title}: сайт открыл платную страницу (${url.take(70)}): лимит симпатий")
+        handleError("${svc.title}: лимит симпатий, сайт предлагает платную страницу: ${url.take(120)}", "limit " + url)
     }
 
     private fun bebooPageDone(url: String?) {
@@ -3061,10 +3235,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 if (svc.id == "love" && loveSticky) loadSite()
                 if (probing) probeSuccess()
                 if (svc.id == "love") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "love", "", j.optString("_city"))
-                if (svc.id == "beboo") {
-                    profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "beboo", "", j.optString("_city"))
+                if (pageSvc()) {
+                    if (svc.id == "beboo") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "beboo", "", j.optString("_city"))
                     bebooMiss = 0
-                    if (sessLikes < 3) logMsg("   Beboo: лайк засчитан (${j.optString("how")}; ответ: ${j.optString("text").take(120)})")
+                    cardSkips = 0
+                    cardReloads = 0
+                    if (sessLikes < 3) logMsg("   ${svc.title}: лайк засчитан (${j.optString("how")}; ответ: ${j.optString("text").take(120)})")
                 }
                 if (svc.id == "tabor") {
                     val u = j.optJSONObject("user")
