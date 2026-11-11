@@ -676,15 +676,16 @@ val SERVICES = listOf(
         "https://m.beboo.ru/search?status=recently&lookFor=1&f=1&countryId=104&regionId=445&townId=4465&lookFor=1&startAge=40&endAge=100&reason=0&f=0", "GET", "",
         60, BebooActivity::class.java, BebooKeepAliveService::class.java
     ),
-    // Love.Mail.Ru: страница оценок (рейтинг). Лента на самой странице, лайк ставится нажатием кнопки, кнопку приложение ищет по признакам (см. BEBOO_JS)
+    // Love.Mail.Ru построен на той же платформе, что и Mamba: тот же лайк фото в «Рейтинге» и та же GraphQL-лента. Работает как Mamba, но на домене love.mail.ru
     Svc(
         "lmail", "Love.Mail.Ru",
         "https://love.mail.ru/ru/rating",
         listOf("https://love.mail.ru", "https://mail.ru", "https://auth.mail.ru", "https://account.mail.ru"), "mail.ru", "liker_lmail", "_lmail",
         listOf("https://love.mail.ru/", "https://mail.ru/", "https://auth.mail.ru/", "https://account.mail.ru/"), ".mail.ru",
-        "/{login}", "GET", "",
-        "https://love.mail.ru/ru/rating", "GET", "",
-        70, LoveMailActivity::class.java, LoveMailKeepAliveService::class.java
+        "/api/ratings/v2/voting/photos/{login}/like?_loc%5Blocale%5D=ru", "POST", "{\"voteSource\":1}",
+        "/api/graphql/?_loc[locale]=ru", "POST", "",
+        70, LoveMailActivity::class.java, LoveMailKeepAliveService::class.java,
+        siteLimit = 250
     ),
     // LovePlanet: адрес страницы, где ставятся лайки/оценки, задаётся в «Адресах и подсказках» (по умолчанию главная сайта)
     Svc(
@@ -760,6 +761,17 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     val prefs: SharedPreferences = app.getSharedPreferences(svc.prefsName, Context.MODE_PRIVATE)
+    init {
+        if (svc.id == "lmail") {
+            val su = prefs.getString("searchUrl", "") ?: ""
+            val lu = prefs.getString("likeUrl", "") ?: ""
+            if ((su.isNotEmpty() && !su.contains("/api/")) || (lu.isNotEmpty() && !lu.contains("/api/"))) {
+                prefs.edit().putString("searchUrl", svc.defSearchUrl).putString("searchMethod", "POST")
+                    .putString("likeUrl", svc.defLikeUrl).putString("likeMethod", "POST").putString("likeBody", svc.defLikeBody).apply()
+            }
+        }
+    }
+
     private val h = Handler(Looper.getMainLooper())
     private val rnd = Random()
     var onChange: (() -> Unit)? = null
@@ -1428,6 +1440,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         s.javaScriptCanOpenWindowsAutomatically = true
         s.blockNetworkImage = svc.id != "love"
         s.setGeolocationEnabled(true)
+        if (svc.id == "lmail" || cardSvc()) s.userAgentString = cleanUa(s.userAgentString)
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
         cm.setAcceptThirdPartyCookies(v, true)
@@ -1449,7 +1462,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
                 val o = origin ?: return
                 if (callback == null) return
-                val ok = o.contains(svc.hostSuffix) && hasLoc()
+                val ok = geoHostOk(svc.id, svc.hostSuffix, o) && hasLoc()
                 callback.invoke(o, ok, ok)
             }
         }
@@ -2106,7 +2119,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun searchBody(): String {
-        if (svc.id == "mamba") return mambaBody()
+        if (mambaSvc()) return mambaBody()
         if (okLike) return okVal("sbody", svc.defSbody)
         return (prefs.getString("sbody", "") ?: "").ifEmpty { DEFAULT_SBODY }
     }
@@ -2209,7 +2222,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     private fun fetchBatch() {
         batchSentAt = SystemClock.elapsedRealtime()
-        if (svc.id == "mamba" && probing && !mambaLimChecked) {
+        if (mambaSvc() && probing && !mambaLimChecked) {
             // при проверке сначала спрашиваем у сайта, сколько лайков сделано и когда сброс (это не тратит лайк)
             mambaLimChecked = true
             mambaLimitsQuery()
@@ -2606,8 +2619,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     // ---------- Love.Mail.Ru и LovePlanet: лента на самой странице ----------
-    private fun pageSvc(): Boolean = svc.id == "beboo" || svc.id == "lmail" || svc.id == "lplanet"
-    private fun cardSvc(): Boolean = svc.id == "lmail" || svc.id == "lplanet"
+    private fun pageSvc(): Boolean = svc.id == "beboo" || svc.id == "lplanet"
+    private fun cardSvc(): Boolean = svc.id == "lplanet"
+    // Mamba и Love.Mail.Ru: одна платформа, один API
+    private fun mambaSvc(): Boolean = svc.id == "mamba" || svc.id == "lmail"
     private var cardPending = false
     private var cardSkips = 0
     private var cardReloads = 0
@@ -3049,7 +3064,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             return
         }
         try {
-            val mamba = svc.id == "mamba"
+            val mamba = mambaSvc()
             val ok = okLike
             val j = JSONObject(text)
             val arr = if (mamba) mambaList(j) else if (ok) j.optJSONArray("users") else (j.optJSONArray("data") ?: j.optJSONArray("user"))
@@ -3252,7 +3267,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     }
                     adUsers.remove(login)
                 }
-                if (svc.id == "mamba") {
+                if (mambaSvc()) {
                     val ow = j.optString("photoOwnerId", "")
                     if (ow.isNotEmpty()) profInfo[login] = Prof("профиль $ow (фото $login)", "", "", "", "")
                 }
@@ -3691,7 +3706,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         writeStatus(true)
         onChange?.invoke()
         // Mamba: сразу уточняем у сайта точное время сброса
-        if (svc.id == "mamba" && !wasProbe && fromSite == null) h.postDelayed({ if (running && !waiting && siteLimitActive()) mambaLimitsQuery() }, 800)
+        if (mambaSvc() && !wasProbe && fromSite == null) h.postDelayed({ if (running && !waiting && siteLimitActive()) mambaLimitsQuery() }, 800)
     }
 
     // Первый принятый лайк после отказа: записываем, сколько сайт реально был закрыт и насколько ошибся расчёт сброса

@@ -857,3 +857,18 @@ fun compactEnv(env: String): String {
     }
     return sb.toString()
 }
+
+
+// Убираем из User-Agent признак встроенного окна: «; wv» и «Version/4.0». Часть сайтов (входы через Mail.ru, VK, Google) на таком окне показывает белый экран
+fun cleanUa(ua: String): String = ua.replace("; wv", "").replace(" Version/4.0", "")
+
+// Геопозицию отдаём сайту сервиса и его вложенным окнам с другого домена (Love.Mail.Ru показывает ленту Mamba)
+fun geoHostOk(svcId: String, hostSuffix: String, origin: String): Boolean {
+    if (origin.contains(hostSuffix)) return true
+    val extra = when (svcId) {
+        "lmail" -> listOf("mamba.ru", "wamba.com", "mail.ru", "imgsmail.ru")
+        "lplanet" -> listOf("loveplanet")
+        else -> emptyList()
+    }
+    return extra.any { origin.contains(it) }
+}

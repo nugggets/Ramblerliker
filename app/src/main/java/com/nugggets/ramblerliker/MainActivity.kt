@@ -31,6 +31,11 @@ import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.ConsoleMessage
+import android.webkit.JsResult
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -150,6 +155,8 @@ open class MainActivity : Activity() {
     private lateinit var etSliceAges: EditText
     private lateinit var etOnlineFirst: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
+    private lateinit var urlBar: EditText
+    private var consoleErrs = 0
     private var geoOrigin = ""
     private lateinit var web: WebView
     private lateinit var prefs: SharedPreferences
@@ -583,7 +590,7 @@ open class MainActivity : Activity() {
         etSearchExtra.isSingleLine = false
         etSearchExtra.minLines = 3
         etSearchExtra.maxLines = 8
-        val pageSv = sv.id == "beboo" || sv.id == "lmail" || sv.id == "lplanet"
+        val pageSv = sv.id == "beboo" || sv.id == "lplanet"
         if (pageSv) {
             // у Beboo нет адреса лайка: поля скрыты, но нужны для сохранения. В поле тела лайка хранится селектор кнопки лайка
             etLikeUrl.visibility = View.GONE
@@ -620,7 +627,7 @@ open class MainActivity : Activity() {
             pill("URL лайка по умолчанию", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { etLikeUrl.setText(sv.defLikeUrl) },
             lp(MATCH, WRAP, t = 12)
         )
-        if (sv.id == "mamba") {
+        if (sv.id == "mamba" || sv.id == "lmail") {
             body.addView(
                 lbl(
                     "Адреса ${sv.title} уже заданы: лента «Рейтинг» и лайк фото. " +
@@ -662,7 +669,7 @@ open class MainActivity : Activity() {
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
-        if (sv.id == "lmail" || sv.id == "lplanet") {
+        if (sv.id == "lplanet") {
             body.addView(
                 lbl(
                     "${sv.title}: лента находится на самой странице, приложение держит её открытой и по очереди жмёт кнопку лайка (ищет по словам «нравится», «лайк», «оценить», по сердечку). " +
@@ -807,13 +814,56 @@ open class MainActivity : Activity() {
     private fun buildBrowserTab(): View {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
+        urlBar = inp("адрес страницы или поисковый запрос", "", false)
+        urlBar.setSingleLine(true)
+        urlBar.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
+        urlBar.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        urlBar.setOnEditorActionListener { v, _, _ ->
+            goUrl(v.text.toString())
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(v.windowToken, 0)
+            v.clearFocus()
+            true
+        }
+        box.addView(urlBar, lp(MATCH, WRAP, l = 6, t = 6, r = 6, b = 2))
         box.addView(web, lp(MATCH, 0, 1f))
         val tb = LinearLayout(this)
+        tb.orientation = LinearLayout.VERTICAL
         tb.setBackgroundColor(Pal.SURFACE)
         tb.setPadding(dp(6), dp(6), dp(6), dp(6))
-        tb.addView(pill("◀  Назад", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 9) { if (web.canGoBack()) web.goBack() }, lp(0, WRAP, 1f, r = 6))
-        tb.addView(pill("⟳  Обновить", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 9) { web.reload() }, lp(0, WRAP, 1f, r = 6))
-        tb.addView(pill("⌂  Домой", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 13f, 9) { web.loadUrl(engine.svc.site) }, lp(0, WRAP, 1f))
+        val r1 = LinearLayout(this)
+        r1.addView(pill("◀ Назад", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoBack()) web.goBack() }, lp(0, WRAP, 1f, r = 6))
+        r1.addView(pill("Вперёд ▶", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoForward()) web.goForward() }, lp(0, WRAP, 1f, r = 6))
+        r1.addView(pill("⟳", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { web.reload() }, lp(0, WRAP, 0.6f, r = 6))
+        r1.addView(pill("⌂ Домой", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
+            web.loadUrl(if (pageSvcUi()) (prefs.getString("searchUrl", engine.svc.defSearchUrl) ?: engine.svc.site) else engine.svc.site)
+        }, lp(0, WRAP, 1f))
+        tb.addView(r1, lp(MATCH, WRAP))
+        val r2 = LinearLayout(this)
+        r2.addView(pill("Копировать адрес", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
+            val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cb.setPrimaryClip(ClipData.newPlainText("url", web.url ?: ""))
+            toast("Адрес скопирован")
+        }, lp(0, WRAP, 1f, r = 6))
+        if (pageSvcUi()) {
+            // страница, где ты ставишь лайки вручную, становится страницей для автолайков
+            r2.addView(pill("★ Эта страница для лайков", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
+                val u = web.url ?: ""
+                if (u.isNotEmpty()) {
+                    prefs.edit().putString("searchUrl", u).apply()
+                    etSearchUrl.setText(u)
+                    engine.logMsg("🔎 ${engine.svc.title}: адрес страницы взят из «Браузера»: ${u.take(120)}")
+                    toast("Эту страницу приложение будет открывать для лайков")
+                }
+            }, lp(0, WRAP, 1.4f, r = 6))
+        }
+        r2.addView(pill("Во внешнем", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(web.url ?: engine.svc.site)))
+            } catch (e: Exception) {
+                toast("Не удалось открыть")
+            }
+        }, lp(0, WRAP, 1f))
+        tb.addView(r2, lp(MATCH, WRAP, t = 6))
         box.addView(tb, lp(MATCH, WRAP))
         return box
     }
@@ -1092,6 +1142,80 @@ open class MainActivity : Activity() {
         view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + uiAuto() + ";window.__autoDiag=false;", null)
     }
 
+    private fun pageSvcUi(): Boolean = engine.svc.id == "beboo" || engine.svc.id == "lplanet"
+
+    // Адреса не из интернета (intent://, vkconnect://, market:// и т. п.): без обработки WebView показывает белую страницу с ошибкой
+    private fun handleExternalUrl(url: String?): Boolean {
+        if (url == null) return false
+        val u = url.lowercase()
+        if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("about:") || u.startsWith("javascript:") || u.startsWith("data:") || u.startsWith("blob:")) return false
+        try {
+            if (u.startsWith("intent:")) {
+                val ti = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                val fb = ti.getStringExtra("browser_fallback_url")
+                if (!fb.isNullOrEmpty()) {
+                    web.loadUrl(fb)
+                    return true
+                }
+                engine.logMsg("↪ Страница пыталась открыть приложение (${ti.`package` ?: ti.scheme}), пропускаю")
+                return true
+            }
+            if (u.startsWith("tel:") || u.startsWith("mailto:")) {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                return true
+            }
+        } catch (e: Exception) {
+        }
+        engine.logMsg("↪ Страница пыталась открыть адрес ${url.take(80)} (не веб-адрес), пропускаю")
+        return true
+    }
+
+    // Всплывающее окно сайта (вход через Mail.ru/VK и т. п.): показываем поверх страницы, чтобы работала связь с основным окном
+    private fun openPopup(resultMsg: android.os.Message): Boolean {
+        val t = WebView(this)
+        val ts = t.settings
+        ts.javaScriptEnabled = true
+        ts.domStorageEnabled = true
+        ts.javaScriptCanOpenWindowsAutomatically = true
+        ts.setSupportMultipleWindows(true)
+        if (engine.svc.id == "lmail" || engine.svc.id == "lplanet") ts.userAgentString = cleanUa(ts.userAgentString)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(t, true)
+        val dlg = android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        dlg.setContentView(t)
+        t.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = handleExternalUrl(request?.url?.toString())
+        }
+        t.webChromeClient = object : WebChromeClient() {
+            override fun onCloseWindow(window: WebView?) {
+                try {
+                    dlg.dismiss()
+                } catch (e: Exception) {
+                }
+            }
+        }
+        dlg.setOnDismissListener {
+            try {
+                CookieManager.getInstance().flush()
+                t.destroy()
+            } catch (e: Exception) {
+            }
+        }
+        dlg.show()
+        val tr = resultMsg.obj as WebView.WebViewTransport
+        tr.webView = t
+        resultMsg.sendToTarget()
+        return true
+    }
+
+    private fun goUrl(raw: String) {
+        var u = raw.trim()
+        if (u.isEmpty()) return
+        if (!u.contains("://")) {
+            u = if (u.contains(" ") || !u.contains(".")) "https://www.google.com/search?q=" + URLEncoder.encode(u, "UTF-8") else "https://$u"
+        }
+        web.loadUrl(u)
+    }
+
     private fun setupWeb() {
         web = WebView(this)
         val s = web.settings
@@ -1099,6 +1223,9 @@ open class MainActivity : Activity() {
         s.domStorageEnabled = true
         s.javaScriptCanOpenWindowsAutomatically = true
         s.mediaPlaybackRequiresUserGesture = false
+        s.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        if (engine.svc.id == "lmail" || engine.svc.id == "lplanet") s.userAgentString = cleanUa(s.userAgentString)
+        if (pageSvcUi() || engine.svc.id == "lmail") s.setSupportMultipleWindows(true)
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
         cm.setAcceptThirdPartyCookies(web, true)
@@ -1107,7 +1234,7 @@ open class MainActivity : Activity() {
             override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
                 val o = origin ?: return
                 if (callback == null) return
-                if (!o.contains(engine.svc.hostSuffix)) {
+                if (!geoHostOk(engine.svc.id, engine.svc.hostSuffix, o)) {
                     callback.invoke(o, false, false) // чужие сайты геопозицию не получают
                     return
                 }
@@ -1118,6 +1245,38 @@ open class MainActivity : Activity() {
                     geoOrigin = o
                     requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 2)
                 }
+            }
+
+            override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean {
+                if (resultMsg == null) return false
+                return try {
+                    openPopup(resultMsg)
+                } catch (e: Exception) {
+                    engine.logMsg("⚠ Не удалось открыть всплывающее окно сайта: ${e.message}")
+                    false
+                }
+            }
+
+            // ошибки внутри страницы: по ним видно, почему экран белый
+            override fun onConsoleMessage(m: ConsoleMessage?): Boolean {
+                if (m != null && m.messageLevel() == ConsoleMessage.MessageLevel.ERROR && consoleErrs < 12) {
+                    consoleErrs++
+                    engine.logMsg("🖥 Ошибка в странице: ${m.message().take(160)} (${(m.sourceId() ?: "").substringAfterLast('/').take(40)}:${m.lineNumber()})")
+                }
+                return true
+            }
+
+            override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                AlertDialog.Builder(this@MainActivity).setMessage(message).setPositiveButton("OK") { _, _ -> result?.confirm() }.setOnCancelListener { result?.cancel() }.show()
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                AlertDialog.Builder(this@MainActivity).setMessage(message)
+                    .setPositiveButton("OK") { _, _ -> result?.confirm() }
+                    .setNegativeButton("Отмена") { _, _ -> result?.cancel() }
+                    .setOnCancelListener { result?.cancel() }.show()
+                return true
             }
         }
         web.addJavascriptInterface(UiBridge(), "Rec")
@@ -1143,11 +1302,31 @@ open class MainActivity : Activity() {
                 return true
             }
 
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = handleExternalUrl(request?.url?.toString())
+
+            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                val r = request ?: return
+                if (r.isForMainFrame) {
+                    val msg = "${error?.errorCode} ${error?.description}"
+                    engine.logMsg("⚠ Страница не открылась ($msg): ${r.url.toString().take(100)}")
+                    runOnUiThread { toast("Страница не открылась: ${error?.description}") }
+                }
+            }
+
+            override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
+                val r = request ?: return
+                val code = errorResponse?.statusCode ?: 0
+                if (r.isForMainFrame && code >= 400) engine.logMsg("⚠ Страница ответила кодом $code: ${r.url.toString().take(100)}")
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                consoleErrs = 0
+                if (::urlBar.isInitialized && !urlBar.hasFocus()) urlBar.setText(url ?: "")
                 injectUi(view)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                if (::urlBar.isInitialized && !urlBar.hasFocus()) urlBar.setText(url ?: "")
                 injectUi(view)
                 CookieManager.getInstance().flush()
             }
@@ -1206,7 +1385,7 @@ open class MainActivity : Activity() {
                         if (ov != "0") prefs.edit().putString("onlineLearned", ov).apply()
                     }
                 }
-                if (engine.svc.id == "mamba" && o.optString("u").contains("/api/graphql") && o.optString("p").contains("\"operationName\":\"Rating\"")) {
+                if ((engine.svc.id == "mamba" || engine.svc.id == "lmail") && o.optString("u").contains("/api/graphql") && o.optString("p").contains("\"operationName\":\"Rating\"")) {
                     // фильтры ленты (возраст, пол, город) берём из настроек самого сайта
                     val mv = Regex("\"variables\":(\\{[^{}]*\\})").find(o.optString("p"))
                     if (mv != null && prefs.getString("mvars", "") != mv.groupValues[1]) {
