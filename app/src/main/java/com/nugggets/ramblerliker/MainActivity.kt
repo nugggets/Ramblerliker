@@ -156,6 +156,12 @@ open class MainActivity : Activity() {
     private lateinit var etOnlineFirst: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
     private lateinit var urlBar: EditText
+    private lateinit var appBarV: View
+    private lateinit var stripV: View
+    private lateinit var navV: View
+    private lateinit var browserTb: View
+    private lateinit var fullTab: TextView
+    private var browserFull = false
     private var consoleErrs = 0
     private var geoOrigin = ""
     private lateinit var web: WebView
@@ -274,15 +280,18 @@ open class MainActivity : Activity() {
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
         root.setBackgroundColor(Pal.BG)
-        root.addView(buildAppBar(), lp(MATCH, WRAP))
+        appBarV = buildAppBar()
+        root.addView(appBarV, lp(MATCH, WRAP))
         val strip = View(this)
         strip.setBackgroundColor(accent)
+        stripV = strip
         root.addView(strip, lp(MATCH, dp(2)))
         val content = FrameLayout(this)
         panels = listOf(buildControlTab(), buildLogTab(), buildReportTab(), buildBrowserTab(), buildRecTab())
         for (p in panels) content.addView(p, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(content, lp(MATCH, 0, 1f))
-        root.addView(buildNav(), lp(MATCH, WRAP))
+        navV = buildNav()
+        root.addView(navV, lp(MATCH, WRAP))
         setContentView(root)
         show(intent.getIntExtra("tab", 0).coerceIn(0, 4))
         engine.ensureRunning() // по умолчанию лайки идут всегда, если не нажимали «Стоп»
@@ -824,20 +833,37 @@ open class MainActivity : Activity() {
             true
         }
         box.addView(urlBar, lp(MATCH, WRAP, l = 6, t = 6, r = 6, b = 2))
-        box.addView(web, lp(MATCH, 0, 1f))
+        val webFrame = FrameLayout(this)
+        webFrame.addView(web, FrameLayout.LayoutParams(MATCH, MATCH))
+        fullTab = TextView(this)
+        fullTab.text = "⤡"
+        fullTab.textSize = 18f
+        fullTab.gravity = Gravity.CENTER
+        fullTab.setTextColor(Pal.TEXT)
+        fullTab.alpha = 0.7f
+        fullTab.background = roundRect(Pal.SURFACE, dpf(12f))
+        fullTab.visibility = View.GONE
+        fullTab.setOnClickListener { setBrowserFull(false) }
+        val flp = FrameLayout.LayoutParams(dp(30), dp(64))
+        flp.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        webFrame.addView(fullTab, flp)
+        box.addView(webFrame, lp(MATCH, 0, 1f))
         val tb = LinearLayout(this)
         tb.orientation = LinearLayout.VERTICAL
         tb.setBackgroundColor(Pal.SURFACE)
         tb.setPadding(dp(6), dp(6), dp(6), dp(6))
-        val r1 = LinearLayout(this)
-        r1.addView(pill("◀ Назад", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoBack()) web.goBack() }, lp(0, WRAP, 1f, r = 6))
-        r1.addView(pill("Вперёд ▶", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoForward()) web.goForward() }, lp(0, WRAP, 1f, r = 6))
-        r1.addView(pill("⟳", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { web.reload() }, lp(0, WRAP, 0.6f, r = 6))
-        r1.addView(pill("⌂ Домой", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
-            web.loadUrl(if (pageSvcUi()) (prefs.getString("searchUrl", engine.svc.defSearchUrl) ?: engine.svc.site) else engine.svc.site)
-        }, lp(0, WRAP, 1f))
-        tb.addView(r1, lp(MATCH, WRAP))
         val r2 = LinearLayout(this)
+        r2.visibility = View.GONE
+        val r1 = LinearLayout(this)
+        r1.addView(pill("◀", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoBack()) web.goBack() }, lp(0, WRAP, 0.7f, r = 6))
+        r1.addView(pill("▶", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoForward()) web.goForward() }, lp(0, WRAP, 0.7f, r = 6))
+        r1.addView(pill("⟳", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { web.reload() }, lp(0, WRAP, 0.7f, r = 6))
+        r1.addView(pill("⌂", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
+            web.loadUrl(if (pageSvcUi()) (prefs.getString("searchUrl", engine.svc.defSearchUrl) ?: engine.svc.site) else engine.svc.site)
+        }, lp(0, WRAP, 0.7f, r = 6))
+        r1.addView(pill("⋯", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { r2.visibility = if (r2.visibility == View.GONE) View.VISIBLE else View.GONE }, lp(0, WRAP, 0.7f, r = 6))
+        r1.addView(pill("⤢ На весь экран", accent, Pal.TEXT, accent, 12f, 9) { setBrowserFull(true) }, lp(0, WRAP, 2f))
+        tb.addView(r1, lp(MATCH, WRAP))
         r2.addView(pill("Копировать адрес", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
             val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cb.setPrimaryClip(ClipData.newPlainText("url", web.url ?: ""))
@@ -863,6 +889,7 @@ open class MainActivity : Activity() {
             }
         }, lp(0, WRAP, 1f))
         tb.addView(r2, lp(MATCH, WRAP, t = 6))
+        browserTb = tb
         box.addView(tb, lp(MATCH, WRAP))
         return box
     }
@@ -1090,7 +1117,20 @@ open class MainActivity : Activity() {
         }
     }
 
+    // Браузер на весь экран: прячем шапку, адресную строку, кнопки и нижнее меню, остаётся только страница и узкая вкладка слева для возврата
+    private fun setBrowserFull(on: Boolean) {
+        browserFull = on
+        val vis = if (on) View.GONE else View.VISIBLE
+        appBarV.visibility = vis
+        stripV.visibility = vis
+        navV.visibility = vis
+        urlBar.visibility = vis
+        browserTb.visibility = vis
+        fullTab.visibility = if (on) View.VISIBLE else View.GONE
+    }
+
     private fun show(i: Int) {
+        if (i != 3 && browserFull) setBrowserFull(false)
         val prev = curTab
         curTab = i
         for ((k, p) in panels.withIndex()) p.visibility = if (k == i) View.VISIBLE else View.GONE
@@ -1844,6 +1884,8 @@ open class MainActivity : Activity() {
     override fun onBackPressed() {
         if (curTab == 3 && webLoaded && web.canGoBack()) {
             web.goBack()
+        } else if (browserFull) {
+            setBrowserFull(false)
         } else if (curTab != 0) {
             show(0)
         } else {
