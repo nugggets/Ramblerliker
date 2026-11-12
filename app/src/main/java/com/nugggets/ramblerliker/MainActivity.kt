@@ -590,7 +590,7 @@ open class MainActivity : Activity() {
         etSearchExtra.isSingleLine = false
         etSearchExtra.minLines = 3
         etSearchExtra.maxLines = 8
-        val pageSv = sv.id == "beboo" || sv.id == "lplanet"
+        val pageSv = sv.id == "beboo"
         if (pageSv) {
             // у Beboo нет адреса лайка: поля скрыты, но нужны для сохранения. В поле тела лайка хранится селектор кнопки лайка
             etLikeUrl.visibility = View.GONE
@@ -615,7 +615,7 @@ open class MainActivity : Activity() {
         body.addView(lbl("URL поиска ({offset} подставляется сам)"), lp(MATCH, WRAP, t = 12))
         body.addView(etSearchUrl, lp(MATCH, WRAP, t = 6))
         }
-        if (sv.id == "rambler") {
+        if (sv.id == "rambler" || sv.id == "lplanet") {
             body.addView(lbl("Дополнительные адреса поиска, по одному в строке ({offset} обязателен). Когда основной список закончится, приложение пройдёт по ним, например по вкладкам сайта «Онлайн» и «Новые». Адреса видны в диагностике после того, как нажмёшь эти вкладки во вкладке «Браузер»."), lp(MATCH, WRAP, t = 12))
             body.addView(etSearchExtra, lp(MATCH, WRAP, t = 6))
             body.addView(lbl("Срезы по возрасту: поиск сайта отдаёт максимум ~1000 анкет, поэтому приложение ищет по одному возрасту, от старшего к младшему. «75» = с 75 вниз до нижней границы твоего фильтра на сайте, «75-50» = с 75 до 50, «0» = выключить."), lp(MATCH, WRAP, t = 12))
@@ -672,11 +672,10 @@ open class MainActivity : Activity() {
         if (sv.id == "lplanet") {
             body.addView(
                 lbl(
-                    "${sv.title}: лента находится на самой странице, приложение держит её открытой и по очереди жмёт кнопку лайка (ищет по словам «нравится», «лайк», «оценить», по сердечку). " +
-                        "1) Вкладка «Браузер»: войди в аккаунт и открой страницу, где ты вручную ставишь лайки. " +
-                        "2) Скопируй её адрес в «Адрес страницы» выше. " +
-                        "3) Жми «Запустить». Темп по умолчанию 8–12 в минуту. " +
-                        "4) Если в журнале «не нашёл кнопку лайка», пришли эту строку целиком: в ней снимок страницы с названиями кнопок, по нему я задам точный селектор."
+                    "${sv.title} устроен как Rambler Знакомства: адреса лайка и ленты уже заданы. " +
+                        "1) Вкладка «Браузер»: войди в LovePlanet и открой знакомства (m.loveplanet.ru/index/meet). " +
+                        "2) Фильтры (пол, возраст, город) выставь один раз на самом сайте и нажми «Искать»: приложение запомнит их из запроса сайта. " +
+                        "3) Жми «Запустить». Остаток лайков и время сброса приложение берёт из ответов сайта."
                 ), lp(MATCH, WRAP, t = 14)
             )
         }
@@ -800,7 +799,7 @@ open class MainActivity : Activity() {
         repText.setTextIsSelectable(true)
         lc.addView(repText)
         col.addView(lc, lp(MATCH, WRAP, t = 12))
-        if (engine.svc.id == "rambler") {
+        if (engine.svc.id == "rambler" || engine.svc.id == "lplanet") {
             col.addView(
                 pill("🔍  Найти «ищу от–до» на открытой анкете", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 10) { findAgeFields() },
                 lp(MATCH, WRAP, t = 12)
@@ -1142,7 +1141,7 @@ open class MainActivity : Activity() {
         view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + uiAuto() + ";window.__autoDiag=false;", null)
     }
 
-    private fun pageSvcUi(): Boolean = engine.svc.id == "beboo" || engine.svc.id == "lplanet"
+    private fun pageSvcUi(): Boolean = engine.svc.id == "beboo"
 
     // Адреса не из интернета (intent://, vkconnect://, market:// и т. п.): без обработки WebView показывает белую страницу с ошибкой
     private fun handleExternalUrl(url: String?): Boolean {
@@ -1225,7 +1224,7 @@ open class MainActivity : Activity() {
         s.mediaPlaybackRequiresUserGesture = false
         s.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         if (engine.svc.id == "lmail" || engine.svc.id == "lplanet") s.userAgentString = cleanUa(s.userAgentString)
-        if (pageSvcUi() || engine.svc.id == "lmail") s.setSupportMultipleWindows(true)
+        if (pageSvcUi() || engine.svc.id == "lmail" || engine.svc.id == "lplanet") s.setSupportMultipleWindows(true)
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
         cm.setAcceptThirdPartyCookies(web, true)
@@ -1379,7 +1378,7 @@ open class MainActivity : Activity() {
             try {
                 val o = JSONObject(s)
                 // запоминаем фильтры поиска, которые шлёт сам сайт
-                if (engine.svc.id == "rambler" && o.optString("u").contains("/api/a-search") && o.optString("p").contains("pol=")) {
+                if ((engine.svc.id == "rambler" || engine.svc.id == "lplanet") && o.optString("u").contains("/api/a-search") && o.optString("p").contains("pol=")) {
                     prefs.edit().putString("sbody", o.optString("p")).apply()
                     Regex("(?:^|&)online=(\\d+)").find(o.optString("p"))?.groupValues?.get(1)?.let { ov ->
                         if (ov != "0") prefs.edit().putString("onlineLearned", ov).apply()
@@ -1475,7 +1474,7 @@ open class MainActivity : Activity() {
         val ok = engine.svc.id == "ok" || engine.svc.id == "vk"
         // счётчики и реклама забивают запись и вытесняют нужные запросы сайта: выбрасываем их, у Rambler оставляем только запросы /api/
         val noise = listOf("mc.yandex", "google", "kraken.rambler", "/cnt/", "analyticsSend", "top-fwz", "adriver", "doubleclick", "an.yandex")
-        val rambler = engine.svc.id == "rambler"
+        val rambler = engine.svc.id == "rambler" || engine.svc.id == "lplanet"
         val recs = if (!ok)
             rec.filter {
                 val u = it.optString("u")
@@ -1687,7 +1686,7 @@ open class MainActivity : Activity() {
         prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
             .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su)
-            .putString("searchExtra", if (engine.svc.id == "rambler") etSearchExtra.text.toString().trim() else "")
+            .putString("searchExtra", if (engine.svc.id == "rambler" || engine.svc.id == "lplanet") etSearchExtra.text.toString().trim() else "")
             .putString("bebooLinkSel", etLinkSel.text.toString().trim())
             .putString("sliceAges", etSliceAges.text.toString().trim().ifEmpty { "0" })
             .putString("onlineFirst", etOnlineFirst.text.toString().trim().filter { it.isDigit() }).apply()

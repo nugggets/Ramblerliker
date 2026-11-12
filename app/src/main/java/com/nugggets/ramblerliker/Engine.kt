@@ -687,15 +687,16 @@ val SERVICES = listOf(
         70, LoveMailActivity::class.java, LoveMailKeepAliveService::class.java,
         siteLimit = 250
     ),
-    // LovePlanet: адрес страницы, где ставятся лайки/оценки, задаётся в «Адресах и подсказках» (по умолчанию главная сайта)
+    // LovePlanet: та же платформа, что у Rambler Знакомств: лайк /api/a-likes, лента /api/a-search, ответ с likesfree/likesleft. Работает как Rambler, но на домене m.loveplanet.ru
     Svc(
         "lplanet", "LovePlanet",
-        "https://loveplanet.ru/",
-        listOf("https://loveplanet.ru", "https://www.loveplanet.ru", "https://m.loveplanet.ru"), "loveplanet.ru", "liker_lplanet", "_lplanet",
-        listOf("https://loveplanet.ru/", "https://www.loveplanet.ru/", "https://m.loveplanet.ru/"), ".loveplanet.ru",
-        "/{login}", "GET", "",
-        "https://loveplanet.ru/", "GET", "",
-        80, LovePlanetActivity::class.java, LovePlanetKeepAliveService::class.java
+        "https://m.loveplanet.ru/index/meet",
+        listOf("https://m.loveplanet.ru", "https://loveplanet.ru", "https://www.loveplanet.ru"), "loveplanet.ru", "liker_lplanet", "_lplanet",
+        listOf("https://m.loveplanet.ru/", "https://loveplanet.ru/", "https://www.loveplanet.ru/"), ".loveplanet.ru",
+        DEFAULT_LIKE_URL, "GET", "", DEFAULT_SEARCH_URL, "POST", DEFAULT_SBODY,
+        80, LovePlanetActivity::class.java, LovePlanetKeepAliveService::class.java,
+        // по записи сайт отдаёт likesfree=2000, как у Rambler
+        siteLimit = 2000, learnWin = false
     )
 )
 
@@ -762,6 +763,14 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     val prefs: SharedPreferences = app.getSharedPreferences(svc.prefsName, Context.MODE_PRIVATE)
     init {
+        if (svc.id == "lplanet") {
+            val su = prefs.getString("searchUrl", "") ?: ""
+            val lu = prefs.getString("likeUrl", "") ?: ""
+            if ((su.isNotEmpty() && !su.contains("/api/")) || (lu.isNotEmpty() && !lu.contains("/api/"))) {
+                prefs.edit().putString("searchUrl", svc.defSearchUrl).putString("searchMethod", "POST")
+                    .putString("likeUrl", svc.defLikeUrl).putString("likeMethod", "GET").putString("likeBody", "").apply()
+            }
+        }
         if (svc.id == "lmail") {
             val su = prefs.getString("searchUrl", "") ?: ""
             val lu = prefs.getString("likeUrl", "") ?: ""
@@ -1262,7 +1271,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val p = ArrayList<String>()
         p.add("темп ${rateText()}/мин")
         p.add("окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)}")
-        p.add("лимит приложения ${prefs.getInt("limit", DEFAULT_LIMIT)}")
+        p.add("лимит приложения ${limTxt()}")
         p.add("общие настройки ${if (commonOn()) "вкл" else "выкл"}")
         p.add("паузы: ошибки ${ci("errPauseMin", 0)}, анкеты кончились ${ci("feedPauseMin", 45)}, вход ${ci("authPauseMin", 30)}, проба лимита ${probeText()}")
         val lu = prefs.getString("likeUrl", svc.defLikeUrl) ?: ""
@@ -1424,8 +1433,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     private fun inject(view: WebView?) {
-        if (svc.id != "rambler") view?.evaluateJavascript(HDR_JS, null)
-        view?.evaluateJavascript(apiJs(svc.id != "rambler"), null)
+        if (!ramblerApi()) view?.evaluateJavascript(HDR_JS, null)
+        view?.evaluateJavascript(apiJs(!ramblerApi()), null)
         if (svc.id == "love") view?.evaluateJavascript(LOVE_JS, null)
         if (cardSvc()) view?.evaluateJavascript("window.__bcard=true;", null)
         if (pageSvc()) view?.evaluateJavascript(BEBOO_JS, null)
@@ -1440,7 +1449,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         s.javaScriptCanOpenWindowsAutomatically = true
         s.blockNetworkImage = svc.id != "love"
         s.setGeolocationEnabled(true)
-        if (svc.id == "lmail" || cardSvc()) s.userAgentString = cleanUa(s.userAgentString)
+        if (svc.id == "lmail" || svc.id == "lplanet") s.userAgentString = cleanUa(s.userAgentString)
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
         cm.setAcceptThirdPartyCookies(v, true)
@@ -2144,7 +2153,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // С какого места продолжать просмотр поиска: всё до прошлой позиции уже лайкнуто, заново его не листаем
     private fun resumeOffset(): Long {
-        if (svc.id != "rambler") return 0L
+        if (!ramblerApi()) return 0L
         if (sliceAges().isNotEmpty()) return 0L
         val saved = prefs.getInt("scanOffset", 0)
         val fresh = System.currentTimeMillis() - prefs.getLong("scanAt", 0L) < 6 * 3600000L
@@ -2170,7 +2179,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Срезы по возрасту: поиск сайта отдаёт максимум ~1000 анкет, поэтому ищем по одному возрасту, от старшего к младшему.
     // Настройка «sliceAges»: "75" = с 75 вниз до нижней границы фильтра сайта, "75-50" = с 75 до 50, пусто/0 = выключено
     private fun ageRange(): List<Int> {
-        if (svc.id != "rambler") return emptyList()
+        if (!ramblerApi()) return emptyList()
         val raw = (prefs.getString("sliceAges", "75") ?: "75").trim()
         if (raw.isEmpty() || raw == "0") return emptyList()
         val parts = raw.split("-", "–", " ").filter { it.isNotBlank() }
@@ -2198,7 +2207,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // значение параметра online для «недавно активные»: из настройки, а если пусто, то то, что сам сайт слал при выборе этого фильтра
     private fun onlineFirst(): String {
-        if (svc.id != "rambler") return ""
+        if (!ramblerApi()) return ""
         val v = (prefs.getString("onlineFirst", "") ?: "").trim().ifEmpty { prefs.getString("onlineLearned", "") ?: "" }.ifEmpty { "2" }
         return if (v.isNotEmpty() && v.all { it.isDigit() } && v != "0") v else ""
     }
@@ -2570,7 +2579,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun mambaPhotoId(o: JSONObject?): String = o?.optJSONObject("photo")?.optString("photoId") ?: ""
 
     private fun parseLike(text: String): JSONObject {
-        if (svc.id == "rambler") return JSONObject(text)
+        if (ramblerApi()) return JSONObject(text)
         return try {
             JSONObject(text)
         } catch (ex: Exception) {
@@ -2580,7 +2589,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     // Итог лайка: 0 успех, 24 вход слетел, остальное ошибка. Rambler: по полю errno, как раньше
     private fun likeCode(j: JSONObject, text: String, status: Int): Int {
-        if (svc.id == "rambler") return j.optInt("errno", -1)
+        if (ramblerApi()) return j.optInt("errno", -1)
         if (pageSvc()) {
             if (status == 401 || status == 403 || j.optBoolean("auth", false)) return 24
             if (status !in 200..299) return status
@@ -2619,8 +2628,10 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     }
 
     // ---------- Love.Mail.Ru и LovePlanet: лента на самой странице ----------
-    private fun pageSvc(): Boolean = svc.id == "beboo" || svc.id == "lplanet"
-    private fun cardSvc(): Boolean = svc.id == "lplanet"
+    private fun pageSvc(): Boolean = svc.id == "beboo"
+    private fun cardSvc(): Boolean = false
+    // Rambler и LovePlanet: одна платформа, один API (/api/a-likes, /api/a-search)
+    private fun ramblerApi(): Boolean = svc.id == "rambler" || svc.id == "lplanet"
     // Mamba и Love.Mail.Ru: одна платформа, один API
     private fun mambaSvc(): Boolean = svc.id == "mamba" || svc.id == "lmail"
     private var cardPending = false
@@ -2969,7 +2980,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     private fun sliceTag(): String {
         val ages = sliceAges()
-        if (svc.id != "rambler" || ages.isEmpty()) return ""
+        if (!ramblerApi() || ages.isEmpty()) return ""
         val per = slicePer()
         val cur = searchIdx % (per * slicePhases())
         val age = ages[(cur % per) / searchUrls().size]
@@ -3076,7 +3087,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             }
             var added = 0
             // с возрастами по очереди: из каждого возраста берём по одной анкете (настройка perAge), дальше берём другой возраст
-            val rot = svc.id == "rambler" && sliceAges().isNotEmpty()
+            val rot = ramblerApi() && sliceAges().isNotEmpty()
             val perAge = prefs.getInt("perAge", 1).coerceAtLeast(1)
             var taken = 0
             var firstFresh = -1
@@ -3096,7 +3107,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     logMsg("🔎 Поля анкеты: ${keys.joinToString(", ")}")
                 }
                 val already = !mamba && o.optInt("own_like", 0) != 0
-                if (svc.id == "rambler") {
+                if (ramblerApi()) {
                     val ol = o.optInt("own_like", 0)
                     ownDist[ol] = (ownDist[ol] ?: 0) + 1
                     if (ol != 0 && ownSamples.size < 3) ownSamples.add("$lg(own=$ol, usr=${o.optInt("usr_like", 0)}, dbl=${o.optInt("dbllike", 0)})")
@@ -3157,7 +3168,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 siteLimitPause("Лимит сайта исчерпан (лента пуста, осталось 0)", text)
                 return
             }
-            if (svc.id == "rambler" && sliceAges().isNotEmpty()) {
+            if (ramblerApi() && sliceAges().isNotEmpty()) {
                 rotateSlices(added, arr.length(), if (firstFresh >= 0) startOff + firstFresh else offset)
                 return
             }
@@ -3196,7 +3207,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 val ageTxt = (if (sAges.isNotEmpty()) " (возраст ${sAges[((searchIdx % nUrls) % per0) / searchUrls().size]}" else " (") +
                     (if (slicePhases() == 2) (if (sAges.isNotEmpty()) ", " else "") + (if (ph0 == 0) "недавно активные" else "все") else "") + ")"
                 logMsg("📊 Итог прохода по поиску ${searchIdx + 1} из $nUrls$ageTxt: просмотрено $scanTotal позиций, уже лайкнуто сайтом $scanLiked, повторы $scanDup, взято в очередь $scanAdded. Поля ответа сайта: $extra" +
-                    (if (svc.id == "rambler") ". Значения own_like в списке: $ownDist, примеры «уже лайкнутых»: $ownSamples" else ""))
+                    (if (ramblerApi()) ". Значения own_like в списке: $ownDist, примеры «уже лайкнутых»: $ownSamples" else ""))
                 ownDist.clear()
                 ownSamples.clear()
                 if (nUrls > 1) {
@@ -3291,7 +3302,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 rowErr = 0
                 likesLeft = j.optInt("likesleft", -1)
                 var leftFound = j.has("likesleft")
-                if (svc.id != "rambler") {
+                if (!ramblerApi()) {
                     val lf = findNum(j, LEFT_KEYS)
                     if (lf >= 0) {
                         likesLeft = lf
@@ -3337,7 +3348,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 stats.event("authLost")
                 onAuthLost(login)
             } else {
-                if (svc.id == "rambler" && code == 11) {
+                if (ramblerApi() && code == 11) {
                     // по диагностике на такие анкеты сайт отвечает errno=11, но лайк из остатка списывает: это не авария, просто идём дальше
                     soft11++
                     stats.event("soft11")
