@@ -16,7 +16,7 @@ import android.os.IBinder
 import android.os.PowerManager
 
 /**
- * Фоновая служба: держит процесс живым (wake lock, Wi-Fi lock, постоянное уведомление) и запускает движок лайков.
+ * Фоновая служба: держит процесс живым (wake lock, Wi-Fi lock, тихий значок службы) и запускает движок лайков.
  * Если систему закрыла процесс, служба перезапускается сама (START_STICKY) и движок продолжает без окна.
  */
 open class KeepAliveService : Service() {
@@ -28,7 +28,7 @@ open class KeepAliveService : Service() {
         const val ACT_DIAG = "com.nugggets.ramblerliker.DIAG"
     }
 
-    // Для Mamba служба в своём процессе (см. MambaKeepAliveService): свой движок, свои id уведомлений
+    // У каждого сервиса служба в своём процессе (см. Entries.kt): свой движок и свои настройки
     protected open val svcId: String = "rambler"
     private var wl: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
@@ -37,23 +37,20 @@ open class KeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val engine = Engine.get(this, svcId)
+        // Android требует значок у службы, которая работает в фоне. Делаем его тихим и свёрнутым: без звука, без обновлений текста
         val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
-            NotificationChannel("liker", "Liker", NotificationManager.IMPORTANCE_LOW)
-        )
-        nm.createNotificationChannel(
-            NotificationChannel("liker_alert", "Liker: важное", NotificationManager.IMPORTANCE_HIGH)
-        )
+        nm.deleteNotificationChannel("liker")
+        nm.deleteNotificationChannel("liker_alert")
+        nm.createNotificationChannel(NotificationChannel("liker_bg", "Работа в фоне", NotificationManager.IMPORTANCE_MIN))
         val pi = PendingIntent.getActivity(
             this, 0, Intent(this, engine.svc.activityCls), PendingIntent.FLAG_IMMUTABLE
         )
-        val n = Notification.Builder(this, "liker")
-            .setContentTitle("${engine.svc.title}: лайки идут")
-            .setContentText("Приложение работает в фоне")
+        val n = Notification.Builder(this, "liker_bg")
+            .setContentTitle(engine.svc.title)
+            .setContentText("Лайки работают в фоне")
             .setSmallIcon(android.R.drawable.ic_menu_send)
             .setContentIntent(pi)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
             .build()
         // Тип «location» нужен, чтобы сайт получал геопозицию, пока окно закрыто (только если разрешение выдано)
         val loc = if (svcId != "rambler" && Build.VERSION.SDK_INT >= 29 &&

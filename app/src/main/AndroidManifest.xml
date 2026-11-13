@@ -130,6 +130,10 @@
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard" />
 
         <receiver
+            android:name=".LimitResetReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>

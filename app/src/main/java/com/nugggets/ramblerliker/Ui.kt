@@ -249,7 +249,8 @@ class SvcStatus(
     val state: String,
     val verdict: String,
     val count: Int,
-    val limit: Int,
+    val siteMax: Int,
+    val winCount: Int,
     val sess: Int,
     val hour: Int,
     val queue: Int,
@@ -274,7 +275,8 @@ fun readStatus(ctx: Context, sv: Svc): SvcStatus {
                 j.optString("state", "off"),
                 j.optString("verdict", ""),
                 j.optInt("count", 0),
-                j.optInt("limit", DEFAULT_LIMIT),
+                j.optInt("siteMax", 0),
+                j.optInt("winCount", 0),
                 j.optInt("sess", 0),
                 j.optInt("hour", 0),
                 j.optInt("queue", 0),
@@ -291,7 +293,7 @@ fun readStatus(ctx: Context, sv: Svc): SvcStatus {
     } catch (e: Exception) {
     }
     return SvcStatus(
-        false, false, "off", "", 0, DEFAULT_LIMIT, 0, 0, 0, 0, "60-80", "-",
+        false, false, "off", "", 0, 0, 0, 0, 0, 0, 0, "60-80", "-",
         "$DEFAULT_WIN_FROM–$DEFAULT_WIN_TO", false, 0L, ""
     )
 }

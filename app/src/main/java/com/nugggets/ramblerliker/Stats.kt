@@ -373,45 +373,6 @@ class Stats(private val file: File, private val title: String) {
 
     private fun ratio(a: Long, b: Long): String = if (b <= 0L) "-" else String.format(Locale.US, "%.1f%%", a * 100.0 / b)
 
-    // Короткая строка для сводки по всем сайтам
-    fun compactLine(): String {
-        val keys = dayKeys()
-        val tk = dayFmt.format(Date())
-        val today = dayObj(tk).optLong("likes", 0L)
-        val yk = dayFmt.format(Date(System.currentTimeMillis() - 86400000L))
-        val yest = dayObj(yk).optLong("likes", 0L)
-        var week = 0L
-        for (k in keys.takeLast(7)) week += dayObj(k).optLong("likes", 0L)
-        val lim = root.optJSONArray("limits")
-        val made = ArrayList<Long>()
-        val wins = ArrayList<Long>()
-        if (lim != null) for (i in 0 until lim.length()) {
-            val e = lim.optJSONObject(i) ?: continue
-            if (e.optInt("made", 0) > 0) made.add(e.optInt("made", 0).toLong())
-            if (e.optLong("winMin", 0L) > 0L) wins.add(e.optLong("winMin", 0L))
-        }
-        val rs = root.optJSONArray("resets")
-        val deltas = ArrayList<Long>()
-        if (rs != null) for (i in 0 until rs.length()) {
-            val e = rs.optJSONObject(i) ?: continue
-            if (e.has("deltaMin") && !e.optBoolean("gap", false) && !e.optBoolean("offHours", false)) deltas.add(e.optLong("deltaMin", 0L))
-        }
-        val sb = StringBuilder()
-        sb.append("лайков: сегодня $today, вчера $yest, за 7 дн. $week; ")
-        sb.append("отказов лимита: ${lim?.length() ?: 0}")
-        if (made.isNotEmpty()) sb.append(" (до отказа медиана ${med(made)} лайков, окно медиана ${hm(med(wins))})")
-        if (deltas.isNotEmpty()) sb.append("; расчёт сброса: медиана ${hm(med(deltas))} (замеров ${deltas.size})")
-        val ln = reqTotal("like", "n")
-        sb.append("; запросы лайка: $ln, неудач ${ratio(reqTotal("like", "bad"), ln)}")
-        val ll = nums(root.optJSONObject("lat")?.optJSONArray("like")).sorted()
-        if (ll.isNotEmpty()) sb.append(", p95 ${pct(ll, 0.95)} мс")
-        val sn = reqTotal("search", "n")
-        sb.append("; поиск: $sn, неудач ${ratio(reqTotal("search", "bad"), sn)}")
-        val starts = nums(root.optJSONArray("starts")).count { it > System.currentTimeMillis() - 86400000L }
-        sb.append("; запусков процесса за сутки: $starts")
-        return sb.toString()
-    }
-
     /**
      * Весь автоанализ одним текстом. rateMin/rateMax: заданный темп (лайков в минуту), winMs: окно лимита сайта,
      * siteMax: лимит, который приложение знает, workHours: длина рабочего окна в часах

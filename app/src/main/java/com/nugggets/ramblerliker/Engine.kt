@@ -1,12 +1,8 @@
 package com.nugggets.ramblerliker
 
 import android.Manifest
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -40,712 +36,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.Random
 import java.util.TimeZone
-
-const val SITE = "https://m.dating.rambler.ru"
-const val DEFAULT_LIKE_URL = "/api/a-likes?likes=1&login={login}&num=1"
-const val DEFAULT_SEARCH_URL = "/api/a-search?foto=1&offset={offset}&save=1&fotopref1=200x200&fotopref2=BP_FILE"
-const val DEFAULT_SBODY = "pol=1&bage=60&tage=99&purp=2&geo=3159%2C4312%2C4400&online=0"
-const val DEFAULT_LIMIT = 60
-const val DEFAULT_RATE_MIN = 60f
-const val DEFAULT_RATE_MAX = 80f
-const val MAX_LIMIT = 2000
-const val SITE_LIMIT_MS = 24L * 3600000L // лимит лайков у сайта: ждём сутки до сброса
-const val DEFAULT_WIN_FROM = 9
-const val DEFAULT_WIN_TO = 23
-const val LOG_MAX = 500
-const val REP_MAX = 3000
-// Счётчики и аналитика: в скрытом окне службы их не грузим (меньше трафика, процессора и батареи)
-val BLOCK_HOSTS = listOf(
-    "mc.yandex.ru", "googletagmanager.com", "google-analytics.com", "doubleclick.net",
-    "kraken.rambler.ru", "cnt.rambler.ru", "top100.rambler.ru", "counter.yadro.ru"
-)
-val COOKIE_URLS = listOf(
-    "https://m.dating.rambler.ru/",
-    "https://dating.rambler.ru/",
-    "https://auth.rambler.ru/",
-    "https://id.rambler.ru/",
-    "https://rambler.ru/"
-)
-
-// Прямые запросы к API сайта из страницы (с её cookie). merge=true: подмешивать заголовки, которые шлёт сам сайт (Mamba)
-fun apiJs(merge: Boolean): String = "window.__merge=" + merge + ";" + """
-(function(){
- var F=function(){return (window.__origFetch||window.fetch).apply(window,arguments)};
- function opts(method,body){
-  var o={method:method||'GET',credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}};
-  if(o.method!=='GET'&&o.method!=='HEAD'&&body){
-   var b=String(body).replace(/^\s+/,'');
-   o.headers['Content-Type']=(b.charAt(0)==='{'||b.charAt(0)==='[')?'application/json; charset=UTF-8':'application/x-www-form-urlencoded; charset=UTF-8';
-   o.body=body;
-  }
-  if(window.__merge&&window.__hdrs){ for(var k in window.__hdrs){ if(!(k in o.headers)) o.headers[k]=window.__hdrs[k]; } }
-  return o;
- }
- function ensure(){
-  var a=window.__merge&&window.__hdrs&&window.__hdrs['authorization'];
-  if(!a||a.indexOf('Bearer eyJ')!==0) return Promise.resolve();
-  try{ var p=JSON.parse(atob(a.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); if(p.exp*1000-Date.now()>120000) return Promise.resolve(); }catch(e){ return Promise.resolve(); }
-  return F('/api/auth-jwt/generateToken',{method:'POST',credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}})
-   .then(function(r){return r.json()}).then(function(j){ if(j&&j.token) window.__hdrs['authorization']='Bearer '+j.token; }).catch(function(){});
- }
- window.__lk={
-  boot:function(){
-   try{
-    var ids=[],seen={};
-    var add=function(v){v=String(v); if(/^\d{5,}$/.test(v)&&!seen[v]){seen[v]=1;ids.push(v);}};
-    var roots=document.querySelectorAll('.sticky-miniature, .card-content, [class*="sympathy"], [class*="vote"]');
-    for(var i=0;i<roots.length;i++){
-     var as=roots[i].querySelectorAll('a[href^="/id"]');
-     for(var j=0;j<as.length;j++){var m=/^\/id(\d+)/.exec(as[j].getAttribute('href')||''); if(m)add(m[1]);}
-    }
-    if(!ids.length){
-     for(var i2=0;i2<roots.length;i2++){
-      var re=/(?:user[_-]?id|data-user[_-]?id|data-id)["'\s:=]+(\d{5,})/g, mm, html=roots[i2].outerHTML;
-      while((mm=re.exec(html)))add(mm[1]);
-     }
-    }
-    var stubEl=document.querySelector('.vote-error-stub');
-    var stub=stubEl?((stubEl.innerText||stubEl.textContent||'').replace(/\s+/g,' ').trim().slice(0,300)||'(без текста)'):'';
-    var diag='';
-    if(!ids.length&&!stub){
-     diag=(document.title||'')+' | '+location.href+' | блоков: '+roots.length+' | текст: '+((document.body&&document.body.innerText)||'').replace(/\s+/g,' ').trim().slice(0,300);
-    }
-    Rec.apiBatch(JSON.stringify({tabor:true,ids:ids,diag:diag,stub:stub}));
-   }catch(e){Rec.apiErr('boot',String(e));}
-  },
-  batch:function(url,method,body){
-   ensure().then(function(){return F(url,opts(method,body))})
-    .then(function(r){return r.text()}).then(function(t){Rec.apiBatch(t)}).catch(function(e){Rec.apiErr('batch',String(e))});
-  },
-  limits:function(url,body){
-   ensure().then(function(){return F(url,opts('POST',body))})
-    .then(function(r){return r.text()}).then(function(t){Rec.apiLimits(t)}).catch(function(e){Rec.apiErr('limits',String(e))});
-  },
-  like:function(login,url,method,body){
-   ensure().then(function(){return F(url,opts(method,body))})
-    .then(function(r){var st=r.status;return r.text().then(function(t){Rec.apiLike2(login,st,t)})}).catch(function(e){Rec.apiErr('like',String(e))});
-  }
- };
-})();
-"""
-
-// Love.ru: лайк ставится нажатием на кнопку «Симпатия» самой страницы (она сама шлёт ?action=sympathy-send и подгружает следующих).
-// Ответ сайта на sympathy-send перехватываем и отдаём движку как ответ на лайк
-const val LOVE_JS = """
-(function(){
- if(!window.__lk) return;
- // скрытое окно не рисует кадры: скрипты страницы, ждущие requestAnimationFrame или видимость вкладки, зависают после первого лайка
- try{
-  if(!window.__rafPoly){
-   window.__rafPoly=1;
-   window.requestAnimationFrame=function(cb){ return setTimeout(function(){ try{ cb(Date.now()); }catch(e){} },16); };
-   window.cancelAnimationFrame=function(id){ clearTimeout(id); };
-   try{ Object.defineProperty(document,'hidden',{get:function(){ return false; },configurable:true}); }catch(e){}
-   try{ Object.defineProperty(document,'visibilityState',{get:function(){ return 'visible'; },configurable:true}); }catch(e){}
-  }
- }catch(e){}
- var pend=null, tok=0;
- function info(){
-  var t=''; try{ var mn=document.querySelector('#main'); t=((mn&&(mn.innerText||mn.textContent))||'').replace(/\s+/g,' ').trim(); }catch(e){}
-  var m=/^(.{1,40}?)\s+(\d{2})\s*(?:лет|год|года)\s*,?\s*([^\d%]{0,40})/.exec(t);
-  return m?{name:m[1],age:m[2],city:m[3].trim()}:{name:t.slice(0,30),age:'',city:''};
- }
- function done(body,status,text){
-  if(!pend) return;
-  var p=pend; pend=null; clearTimeout(p.t);
-  var m=/login_to=([^&]+)/.exec(body); var login=m?decodeURIComponent(m[1]):p.tok;
-  var o; try{ o=JSON.parse(text); }catch(e){ Rec.apiLike2(login,status,String(text).slice(0,600)); return; }
-  o._name=p.name; o._age=p.age; o._city=p.city;
-  Rec.apiLike2(login,status,JSON.stringify(o));
- }
- function hook(){
-  if(window.__loveHook) return; window.__loveHook=1;
-  var oF=window.fetch;
-  if(oF){ window.fetch=function(i,init){
-    var url=(typeof i==='string')?i:((i&&i.url)||''); var b=(init&&init.body)||'';
-    var p=oF.apply(this,arguments);
-    if(String(url).indexOf('sympathy-send')>=0){ window.__sent=(window.__sent||0)+1; p.then(function(r){ try{ r.clone().text().then(function(t){ done(String(b),r.status,t); }); }catch(e){} }).catch(function(){}); }
-    return p; }; }
-  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open=function(m,u){ this.__lu=String(u||''); try{ var q=(this.__lu.match(/action=([\w-]+)/)||[])[1]; if(q){ (window.__lx=window.__lx||[]).push(q); if(window.__lx.length>8) window.__lx.shift(); } }catch(e){} return xo.apply(this,arguments); };
-  XMLHttpRequest.prototype.send=function(b){ var x=this;
-   if((x.__lu||'').indexOf('sympathy-send')>=0){ window.__sent=(window.__sent||0)+1; x.addEventListener('loadend',function(){ var t=''; try{t=x.responseText||'';}catch(e){} done(String(b||''),x.status,t); }); }
-   return xs.apply(this,arguments); };
- }
- function closeWins(){ try{ var l=document.querySelectorAll('a.close_window, .win_closeable a.top_back, .win_closable a.top_back'); for(var i=0;i<l.length;i++){ l[i].click(); } }catch(e){} }
- function snap(){
-  try{
-   var c=document.querySelector('#sympathy_flow_btn_container'); var b=document.querySelector('#sympathy_btn_send'); var w=document.querySelectorAll('.win'); var wt='';
-   for(var i=0;i<w.length&&i<2;i++){ wt+=(w[i].id||'')+':'+String(w[i].innerText||w[i].textContent||'').replace(/\s+/g,' ').slice(0,50)+' | '; }
-   var sy='', fn='';
-   try{ if(window.sympathy){ var pk=[], fk=[]; for(var k in window.sympathy){ var v=window.sympathy[k]; if(typeof v==='function'){ fk.push(k); continue; } pk.push(k+'='+(v===null?'null':(typeof v==='object'?'obj':String(v).slice(0,16)))); } sy=pk.slice(0,25).join(','); fn=fk.slice(0,30).join(','); } else { sy='нет объекта sympathy'; } }catch(e){ sy='sympathy: '+e; }
-   var src='';
-   try{ if(window.sympathy&&!window.__srcDumped){ window.__srcDumped=1; var nm=['sendButtonClick','sendSympathy','sympathySendSuccessful']; for(var q=0;q<nm.length;q++){ var fq=window.sympathy[nm[q]]; if(typeof fq==='function'){ src+=' || '+nm[q]+': '+String(fq).replace(/\s+/g,' ').slice(0,700); } } } }catch(e){}
-   return 'контейнер: '+(c?c.className:'нет')+', кнопка: '+(b?(b.disabled?'выключена':'есть'):'нет')+', окон: '+w.length+' '+wt+'html: '+document.documentElement.className+', запросы: '+(window.__lx||[]).join(',')+', hidden: '+document.hidden+', поля sympathy: '+sy+', методы sympathy: '+fn+src;
-  }catch(e){ return 'снимок: '+e; }
- }
- window.__lk.boot=function(){
-  try{
-   hook();
-   var b=document.querySelector('#sympathy_btn_send');
-   if(b){ Rec.apiBatch(JSON.stringify({love:true,ids:['L'+Date.now()+'_'+(tok++)]})); return; }
-   var t=((document.body&&(document.body.innerText||document.body.textContent))||'').replace(/\s+/g,' ').trim().slice(0,300);
-   Rec.apiBatch(JSON.stringify({love:true,ids:[],stub:t||'(пустая страница)'}));
-  }catch(e){ Rec.apiErr('boot',String(e)); }
- };
- window.__lk.like=function(login,url,method,body){
-  try{
-   hook();
-   var b=document.querySelector('#sympathy_btn_send');
-   if(!b){ Rec.apiErr('notready-like',login); return; }
-   // пока сайт обрабатывает прошлую оценку, блок кнопки помечен «disabled» и нажатия игнорируются: ждём до 5 с
-   var c=document.querySelector('#sympathy_flow_btn_container');
-   if(c&&String(c.className).indexOf('disabled')>=0&&(window.__lw||0)<15){ window.__lw=(window.__lw||0)+1; setTimeout(function(){ window.__lk.like(login,url,method,body); },200); return; }
-   // 3 секунды кнопка так и не включилась: снимаем блокировку сами
-   if(c&&String(c.className).indexOf('disabled')>=0){ try{ c.classList.remove('disabled'); }catch(e){} }
-   window.__lw=0;
-   if(window.__loveClose!==false) closeWins();
-   var inf=info();
-   pend={tok:login,name:inf.name,age:inf.age,city:inf.city,t:setTimeout(function(){ if(pend){ pend=null; Rec.apiErr('like','сайт не ответил на нажатие «Симпатия» за 15 с | '+snap()); } },15000)};
-   var s0=window.__sent||0;
-   b.click();
-   setTimeout(function(){
-    if(pend&&(window.__sent||0)===s0){ var pp=pend; pend=null; clearTimeout(pp.t); Rec.apiErr('clickignored',snap()); }
-   },3000);
-  }catch(e){ Rec.apiErr('like',String(e)); }
- };
-})();
-"""
-
-// Для скрытой страницы Mamba: запоминаем заголовки, которые шлёт сам сайт (авторизация и т.п.), чтобы слать их же
-// прозрачный gif 1x1 для Love.ru
-val PIXEL_GIF: ByteArray = android.util.Base64.decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", android.util.Base64.DEFAULT)
-
-const val HDR_JS = """
-(function(){
- if(window.__hdrHook) return; window.__hdrHook=1;
- window.__hdrs=window.__hdrs||{};
- var put=function(k,v){k=String(k).toLowerCase(); if(k==='content-type'||k==='content-length'||k==='accept'||k==='accept-language')return; window.__hdrs[k]=String(v);
-  if(!window.__hl){window.__hl=1; try{Rec.hdr(k)}catch(e){}}};
- var cap=function(h){try{ if(!h)return;
-  if(Array.isArray(h)){h.forEach(function(p){put(p[0],p[1])})}
-  else if(typeof h.forEach==='function'){h.forEach(function(v,k){put(k,v)})}
-  else{for(var k in h)put(k,h[k])} }catch(e){}};
- var of=window.fetch;
- window.__origFetch=window.__origFetch||of;
- if(of){ window.fetch=function(i,init){ cap((init&&init.headers)||(i&&i.headers)); return of.apply(this,arguments); }; }
- var xh=XMLHttpRequest.prototype.setRequestHeader;
- XMLHttpRequest.prototype.setRequestHeader=function(n,v){put(n,v);return xh.apply(this,arguments)};
-})();
-"""
-
-const val AUTO_JS = """
-(function(){
- if(window.__auto) return; window.__auto=1;
- var clicks=0, last=0, lastInfo=0, infos=0;
- var SEL='button,a,[role=button],input[type=submit],input[type=button],[class*=button],[class*=Button],[class*=btn],[class*=Btn]';
- var BAD=/(через|с помощью|vk|google|apple|яндекс|yandex|mail|facebook|телефон|регистр|создать|без )/i;
- function vis(e){ var r=e.getBoundingClientRect(); return r.width>0 && r.height>0 && getComputedStyle(e).visibility!=='hidden'; }
- function txt(e){ return ((e.tagName==='INPUT')?(e.value||''):(e.innerText||e.textContent||'')).replace(/\s+/g,' ').trim(); }
- function ok(t){
-  if(!t||t.length>40) return false;
-  if(/^войти( в (аккаунт|профиль))?$/i.test(t)) return true;
-  if(/^продолжить/i.test(t) && !BAD.test(t)) return true;
-  return false;
- }
- function fire(e){
-  try{ e.scrollIntoView({block:'center'}); }catch(x){}
-  var r=e.getBoundingClientRect(), cx=r.left+r.width/2, cy=r.top+r.height/2;
-  var o={bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy};
-  ['pointerdown','mousedown','pointerup','mouseup'].forEach(function(n){
-   try{ e.dispatchEvent(n.indexOf('pointer')===0 ? new PointerEvent(n,o) : new MouseEvent(n,o)); }catch(z){}
-  });
-  e.click();
- }
- function tryClick(){
-  if(!window.__autoOn) return;
-  if(!/(^|\.)(rambler\.ru|sber\.ru|sberbank\.ru|sberid\.ru|mamba\.ru)$/.test(location.hostname)) return;
-  var now=Date.now();
-  var els=document.querySelectorAll(SEL), seen=[], hit=null;
-  for(var i=0;i<els.length;i++){
-   var e=els[i], t=txt(e);
-   if(!t||t.length>40||!vis(e)) continue;
-   if(seen.length<12 && seen.indexOf(t)<0) seen.push(t);
-   if(!hit && ok(t)) hit=[e,t];
-  }
-  if(hit && now-last>=2500 && clicks<8){
-   last=now; clicks++;
-   try{Rec.autoClick(hit[1],location.hostname)}catch(x){}
-   fire(hit[0]); return;
-  }
-  var diag = window.__autoDiag || location.hostname.indexOf('dating.rambler.ru')<0;
-  if(!hit && diag && infos<6 && now-lastInfo>8000){
-   lastInfo=now; infos++;
-   try{Rec.autoInfo(location.hostname+' | кнопки: '+(seen.join(' ; ')||'нет')+' | iframe: '+document.querySelectorAll('iframe').length)}catch(x){}
-  }
- }
- window.__autoTick=tryClick;
- setInterval(tryClick,1500);
-})();
-"""
-
-// Beboo: анкеты берём из поиска с фильтрами (ссылки на анкеты), потом открываем анкету и нажимаем на ней кнопку лайка.
-// Страницу сайта не знаем заранее, поэтому ссылки и кнопка ищутся по признакам; при неудаче в журнал пишется снимок страницы.
-// Селекторы можно задать вручную в «Адреса и подсказки»
-const val BEBOO_JS = """
-(function(){
- if(!window.__lk) return;
- var NAV=/^\/(search|meets|messeger|messages|chat|agreement|switcher|settings|login|logout|registration|register|help|faq|rules|payment|pay|vip|gifts|visitors|favorites|blacklist|support|privacy|policy|cookie|about|contacts|partners|app|apps|download|rating|top|news|blog|forum|paid|buy)(\/|$)/i;
- var BADURL=/(mc\.yandex|google|doubleclick|metrika|counter|analytics|top-fwz|tns-counter|gstatic|facebook|vk\.com\/rtrg|adriver|adfox)/i;
- var LIMIT=/(\/paid\/|лимит|закончил|исчерпан|превышен|только для vip|только для вип|купите vip|оформите vip)/i;
- function vis(e){ try{ var r=e.getBoundingClientRect(); var cs=getComputedStyle(e); return r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none'; }catch(x){ return false; } }
- function txt(e){ return ((e.tagName==='INPUT')?(e.value||''):(e.innerText||e.textContent||'')).replace(/\s+/g,' ').trim(); }
- function body(){ return ((document.body&&(document.body.innerText||document.body.textContent))||'').replace(/\s+/g,' ').trim(); }
- function absU(a){ try{ return new URL(a.getAttribute('href'),location.href); }catch(e){ return null; } }
- function fire(e){
-  try{ e.scrollIntoView({block:'center'}); }catch(x){}
-  var r=e.getBoundingClientRect(), cx=r.left+r.width/2, cy=r.top+r.height/2;
-  var o={bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy};
-  ['pointerdown','mousedown','pointerup','mouseup'].forEach(function(n){
-   try{ e.dispatchEvent(n.indexOf('pointer')===0 ? new PointerEvent(n,o) : new MouseEvent(n,o)); }catch(z){}
-  });
-  e.click();
- }
- function anchorOf(el){
-  if(!el) return null;
-  if(el.tagName==='A'&&el.getAttribute('href')) return el;
-  try{ var c=el.closest('a[href]'); if(c) return c; }catch(e){}
-  try{ return el.querySelector('a[href]'); }catch(e){ return null; }
- }
- function shapeOf(u){ return u.pathname.replace(/\d+/g,'N'); }
- // ссылки на анкеты: свой селектор, иначе самая многочисленная группа однотипных ссылок (одинаковый вид пути)
- function links(sel){
-  var out=[], dup={}, groups={}, order=[];
-  function put(a){
-   var u=absU(a); if(!u||u.host!==location.host) return null;
-   var k=u.pathname+u.search; if(dup[k]) return null; dup[k]=1; out.push(k); return k;
-  }
-  if(sel){
-   try{ var els=document.querySelectorAll(sel); for(var i=0;i<els.length;i++){ var a=anchorOf(els[i]); if(a) put(a); } }catch(e){}
-   if(out.length) return {ids:out,diag:'селектор «'+sel+'»'};
-  }
-  var as=document.querySelectorAll('a[href]');
-  for(var j=0;j<as.length;j++){
-   var a2=as[j]; var h=a2.getAttribute('href')||'';
-   if(!h||h.charAt(0)==='#'||/^(javascript|mailto|tel):/i.test(h)) continue;
-   var u2=absU(a2); if(!u2||u2.host!==location.host) continue;
-   var p=u2.pathname; if(p==='/'||p===''||NAV.test(p)) continue;
-   try{ if(a2.closest('nav,header,footer,[class*=header],[class*=footer],[class*=menu],[class*=navbar]')) continue; }catch(e){}
-   var sh=shapeOf(u2); var g=groups[sh];
-   if(!g){ g=groups[sh]={n:0,keys:{},img:0,sample:u2.pathname+u2.search,list:[]}; order.push(sh); }
-   var key=u2.pathname+u2.search; if(g.keys[key]) continue; g.keys[key]=1; g.n++; g.list.push(a2);
-   if(a2.querySelector('img')||(a2.style&&a2.style.backgroundImage)) g.img++;
-  }
-  var best=null,bs=-1;
-  for(var q=0;q<order.length;q++){ var gg=groups[order[q]]; var sc=gg.n+gg.img*2+(order[q].indexOf('N')>=0?3:0); if(sc>bs){ bs=sc; best=order[q]; } }
-  var diag=order.map(function(s){ return s+' ×'+groups[s].n+(groups[s].img?' (с фото '+groups[s].img+')':''); }).sort().slice(0,6).join(' ; ');
-  if(!best) return {ids:[],diag:diag||'ссылок нет'};
-  var bg=groups[best]; if(bg.n<2&&best.indexOf('N')<0) return {ids:[],diag:diag};
-  for(var z=0;z<bg.list.length;z++) put(bg.list[z]);
-  return {ids:out,diag:'группа '+best+'; '+diag};
- }
- window.__lk.boot=function(sel){
-  try{
-   var r=links(sel);
-   var stub=''; if(!r.ids.length) stub=body().slice(0,300)||'(пустая страница)';
-   Rec.apiBatch(JSON.stringify({beboo:true,onSearch:/\/search/i.test(location.pathname),ids:r.ids,count:r.ids.length,stub:stub,diag:r.diag,url:location.href}));
-  }catch(e){ Rec.apiErr('boot',String(e)); }
- };
- // подгрузить следующие анкеты: кнопка «Ещё»/«Далее»/следующая страница, иначе прокрутка вниз
- window.__lk.more=function(){
-  try{
-   var done='';
-   var cand=document.querySelectorAll('a[rel=next],[class*=next],[class*=more],[class*=Next],[class*=More],[class*=pager] a,[class*=pagin] a,button,a[href]');
-   var re=/^(ещё|еще|показать ещё|показать еще|загрузить ещё|загрузить еще|далее|следующая|вперёд|вперед|»|›|>|more|next)(\s|$)/i;
-   for(var i=0;i<cand.length&&!done;i++){
-    var e=cand[i]; if(!vis(e)) continue;
-    var t=txt(e); var rel=(e.getAttribute('rel')||'');
-    if(rel==='next'||(t.length<=25&&re.test(t))){ done=t||rel; try{ fire(e); }catch(x){ try{ e.click(); }catch(y){} } }
-   }
-   try{ window.scrollTo(0,document.documentElement.scrollHeight); window.dispatchEvent(new Event('scroll')); }catch(e){}
-  }catch(e){}
- };
- function hookNet(){
-  if(window.__bhook) return; window.__bhook=1; window.__bcap={on:false,list:[]};
-  function rec(url,method){ if(!window.__bcap.on||BADURL.test(String(url))) return null; var o={url:String(url),method:method||'GET',status:0,text:null}; window.__bcap.list.push(o); return o; }
-  var oF=window.fetch;
-  if(oF){ window.fetch=function(i,init){
-    var url=(typeof i==='string')?i:((i&&i.url)||''); var o=rec(url,(init&&init.method)||(i&&i.method)||'GET');
-    var p=oF.apply(this,arguments);
-    if(o){ p.then(function(r){ o.status=r.status; try{ r.clone().text().then(function(t){ o.text=String(t).slice(0,600); }); }catch(e){ o.text=''; } }).catch(function(){ o.status=-1; o.text=''; }); }
-    return p; }; }
-  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open=function(m,u){ this.__bm=m; this.__bu=u; return xo.apply(this,arguments); };
-  XMLHttpRequest.prototype.send=function(b){ var x=this; var o=rec(x.__bu||'',x.__bm);
-   if(o){ x.addEventListener('loadend',function(){ o.status=x.status; var t=''; try{ t=x.responseText||''; }catch(e){} o.text=String(t).slice(0,600); }); }
-   return xs.apply(this,arguments); };
- }
- function attrs(e){
-  var s=(e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className)+' '+(e.id||'')+' '+(e.getAttribute('title')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('href')||'')+' '+(e.getAttribute('onclick')||'');
-  try{ for(var i=0;i<e.attributes.length;i++){ var n=e.attributes[i].name; if(n.indexOf('data-')===0) s+=' '+n+'='+e.attributes[i].value; } }catch(x){}
-  return String(s).toLowerCase();
- }
- var POS=/(like|heart|sympath|симпат|нравит|нравл|лайк|оцен|rate|vote|♥|❤|♡)/i;
- var NEG=/(dislike|unlike|не нравит|не нравл|снять|убрать|удалить|пропустить|skip|nope|report|жалоб|блок|block|share|поделить)/i;
- var DONE=/(^|[\s_-])(active|liked|checked|selected|done|pressed|on|voted)([\s_-]|$)/i;
- function findBtn(sel){
-  if(sel){
-   try{ var l=document.querySelectorAll(sel); for(var i=0;i<l.length;i++){ if(vis(l[i])) return {el:l[i],liked:DONE.test(attrs(l[i]))||l[i].getAttribute('aria-pressed')==='true',how:'селектор'}; } }catch(e){}
-   return {el:null};
-  }
-  var cs=document.querySelectorAll('button,a,[role=button],[onclick],input[type=button],input[type=submit],[class*=like],[class*=Like],[class*=heart],[class*=sympath],[data-action],[data-like]');
-  var best=null,bs=0;
-  for(var j=0;j<cs.length;j++){
-   var e=cs[j]; if(!vis(e)) continue;
-   try{ if(e.closest('nav,header,footer')) continue; }catch(x){}
-   if(e.tagName==='A'){ var uu=absU(e); if(uu&&(NAV.test(uu.pathname)||uu.pathname==='/')) continue; }
-   if(window.__bcard&&e.tagName==='A'){ var hr=e.getAttribute('href')||''; if(hr&&hr.charAt(0)!=='#'&&!/^javascript:/i.test(hr)&&!/(like|sympath|accept|vote|rate)/i.test(hr)&&!e.getAttribute('onclick')) continue; }
-   var t=txt(e); if(t.length>40) continue;
-   var a=attrs(e), all=(t+' '+a);
-   if(NEG.test(all)) continue;
-   var sc=0;
-   if(POS.test(t)) sc+=6;
-   if(POS.test(a)) sc+=4;
-   if(sc===0) continue;
-   var r=e.getBoundingClientRect(); sc-=Math.min(3,(r.width*r.height)/40000);
-   if(e.tagName==='BUTTON'||e.tagName==='A'||e.getAttribute('role')==='button') sc+=1;
-   if(sc>bs){ bs=sc; best=e; }
-  }
-  if(!best) return {el:null};
-  return {el:best,liked:DONE.test(attrs(best))||best.getAttribute('aria-pressed')==='true'||best.disabled===true,how:'признаки'};
- }
- function info(){
-  var n=''; try{ var h=document.querySelector('h1,[class*=userName],[class*=user-name],[class*=name],[class*=Name]'); n=h?txt(h):''; }catch(e){}
-  if(!n) n=(document.title||'').split(/[-|—,]/)[0].trim();
-  var t=body(); var m=/(\d{2})\s*(?:лет|год|года)/.exec(t); var c='';
-  var cm=/(?:лет|год|года)\s*,?\s*([А-ЯЁA-Z][^\d,|]{2,30})/.exec(t); if(cm) c=cm[1].trim();
-  var ma=/^(.*?),\s*(\d{2})$/.exec(n);
-  if(ma){ n=ma[1]; if(!m) m=[0,ma[2]]; }
-  return {name:n.slice(0,30),age:m?m[1]:'',city:c.slice(0,30)};
- }
- function snap(sel){
-  try{
-   var cs=document.querySelectorAll('button,a,[role=button],[onclick]'), out=[];
-   for(var i=0;i<cs.length&&out.length<14;i++){ var e=cs[i]; if(!vis(e)) continue; var t=txt(e).slice(0,18); var c=String(e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className).slice(0,30); out.push(e.tagName.toLowerCase()+(c?'.'+c:'')+(t?'«'+t+'»':'')); }
-   return 'url: '+location.pathname+location.search+' | заголовок: '+(document.title||'').slice(0,40)+' | кнопки: '+out.join(' ; ')+' | текст: '+body().slice(0,160);
-  }catch(e){ return 'снимок: '+e; }
- }
- window.__lk.like=function(login,url,method,sel){
-  try{
-   hookNet();
-   var pr=info(); var closed=false;
-   function fin(obj,http){ if(closed) return; closed=true; window.__bcap.on=false; obj._name=pr.name; obj._age=pr.age; obj._city=pr.city; Rec.apiLike2(login,http||200,JSON.stringify(obj)); }
-   if(/\/(login|auth|enter|signin|registration|reg)(\/|\?|$)/i.test(location.pathname)){ fin({status:0,auth:true,msg:'страница входа'},401); return; }
-   var tries=0;
-   (function find(){
-    if(/^\/paid\//.test(location.pathname)){ fin({status:0,limit:true,msg:'VIP-страница вместо анкеты: '+location.pathname}); return; }
-    var b=findBtn(sel);
-    if(!b.el){
-     if(++tries<20){ setTimeout(find,300); return; }
-     var bt=body();
-     if(LIMIT.test(bt.slice(0,400))){ fin({status:0,limit:true,msg:bt.slice(0,200)}); return; }
-     Rec.apiErr('like','не нашёл кнопку лайка на странице анкеты | '+snap(sel)); return;
-    }
-    if(b.liked){ Rec.apiErr('skip',login+' ('+(txt(b.el)||attrs(b.el).slice(0,30))+')'); return; }
-    var before=attrs(b.el), el=b.el, a=(el.tagName==='A')?el:null;
-    window.__bcap.list=[]; window.__bcap.on=true;
-    var href=a?(a.getAttribute('href')||''):'';
-    var plain=a&&href&&href.charAt(0)!=='#'&&!/^javascript:/i.test(href)&&!a.getAttribute('onclick')&&/(like|sympath|accept|vote)/i.test(href);
-    if(plain){
-     // обычная ссылка-лайк: идём по ней сами, чтобы страница не уходила на другой адрес
-     var u=absU(a);
-     (window.__origFetch||window.fetch).call(window,u.href,{credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}})
-      .then(function(r){ var st=r.status; return r.text().then(function(t){
-        var s=String(t).slice(0,600);
-        if(st===401){ fin({status:0,auth:true,msg:s},401); return; }
-        if(LIMIT.test(s)){ fin({status:0,limit:true,msg:s}); return; }
-        if(s.trim().charAt(0)==='<'&&s.length>300){ fin({status:0,http:st,how:'ссылка вернула страницу, а не лайк',text:s.slice(0,100)}); return; }
-        fin({status:(st>=200&&st<300)?1:0,http:st,how:'ссылка '+u.pathname,text:s.slice(0,200)}); }); })
-      .catch(function(e){ Rec.apiErr('like','ссылка лайка не открылась: '+e); });
-     return;
-    }
-    fire(el);
-    var t0=Date.now();
-    (function wait(){
-     var L=window.__bcap.list, got=null;
-     for(var i=0;i<L.length;i++){ if(L[i].status!==0&&L[i].text!==null){ got=L[i]; break; } }
-     if(got){
-      if(got.status===401){ fin({status:0,auth:true,msg:got.text},401); return; }
-      if(LIMIT.test(got.text||'')){ fin({status:0,limit:true,msg:got.text}); return; }
-      fin({status:(got.status>=200&&got.status<300)?1:0,http:got.status,how:got.method+' '+got.url.slice(0,60),text:(got.text||'').slice(0,200)}); return;
-     }
-     if(/^\/paid\//.test(location.pathname)){ fin({status:0,limit:true,msg:'VIP-страница после лайка: '+location.pathname}); return; }
-     var after=''; try{ after=attrs(el); }catch(e){}
-     var gone=!document.body.contains(el)||!vis(el);
-     if(Date.now()-t0>1200&&L.length===0&&(after!==before||gone||el.disabled)){ fin({status:1,how:'по состоянию кнопки',text:(after!==before?'класс изменился':'кнопка исчезла')}); return; }
-     var dlg=''; try{ var d=document.querySelector('[role=dialog],[class*=modal],[class*=popup],[class*=Modal],[class*=Popup]'); if(d&&vis(d)) dlg=txt(d); }catch(e){}
-     if(dlg&&LIMIT.test(dlg)){ fin({status:0,limit:true,msg:dlg.slice(0,200)}); return; }
-     if(Date.now()-t0>5000){
-      if(L.length>0){ fin({status:1,how:'запрос без ответа: '+L[0].url.slice(0,60),text:''}); return; }
-      window.__bcap.on=false; closed=true; Rec.apiErr('like','нажал «'+(txt(el)||attrs(el).slice(0,40))+'», но сайт не ответил и вид не изменился | '+snap(sel)); return;
-     }
-     setTimeout(wait,200);
-    })();
-   })();
-  }catch(e){ Rec.apiErr('like',String(e)); }
- };
-})();
-"""
-
-const val OK_API = "https://okdating-app.ru/api/"
-
-// OK: скрипт для КАЖДОГО окна страницы (мини-приложение живёт во вложенном окне другого домена).
-// Он подсматривает, с какими общими параметрами (_token, _session, _device_info ...) приложение
-// ходит на okdating-app.ru, и выполняет наши запросы от имени этого же окна: с тем же токеном и тем же адресом страницы
-const val OK_JS = """
-(function(){
- if(window.__okj) return; window.__okj=1;
- if(typeof Rec==='undefined'||!Rec.okPoll) return;
- var H=''; try{H=String(location.hostname)}catch(e){}
- var API='okdating-app.ru/api/';
- var st={common:null,last:{},ready:false};
- var OF=window.fetch;
- var rawFetch=function(){return OF.apply(window,arguments)};
- function pairs(body,cb){
-  try{
-   if(!body) return false;
-   if(typeof body==='string'){ body=new URLSearchParams(body); }
-   if((typeof FormData!=='undefined'&&body instanceof FormData)||(typeof URLSearchParams!=='undefined'&&body instanceof URLSearchParams)){ body.forEach(function(v,k){cb(k,v)}); return true; }
-  }catch(e){}
-  return false;
- }
- function grab(url,body){
-  try{
-   url=String(url); var i=url.indexOf(API); if(i<0) return;
-   var m=url.substring(i+API.length).split('?')[0];
-   var com={}, own={}, any=false;
-   pairs(body,function(k,v){ if(typeof v!=='string') return; any=true; if(k.charAt(0)==='_') com[k]=v; else own[k]=v; });
-   if(!any||!com._token) return;
-   st.common=com;
-   if(m) st.last[m]=own;
-   if(!st.ready){ st.ready=true; setTimeout(function(){ try{Rec.okReady(H)}catch(e){} },3000); }
-  }catch(e){}
- }
- if(OF){ window.fetch=function(i,init){ try{ grab((typeof i==='string')?i:((i&&i.url)||''),(init&&init.body)||null); }catch(e){} return OF.apply(this,arguments); }; }
- try{
-  var xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open=function(m,u){ this.__ou=u; return xo.apply(this,arguments); };
-  XMLHttpRequest.prototype.send=function(b){ try{ grab(this.__ou,b); }catch(e){} return xs.apply(this,arguments); };
- }catch(e){}
- var busy=false;
- function run(c){
-  busy=true;
-  try{
-   var fd=new FormData(), p=c.params||{}, com=st.common||{};
-   var u=String(c.url), i=u.indexOf(API), m=i<0?'':u.substring(i+API.length).split('?')[0];
-   var base=st.last[m]||{};
-   for(var k in base){ if(!(k in p)&&k!=='user_id'&&k!=='meta') fd.append(k,base[k]); }
-   for(var k2 in p) fd.append(k2,p[k2]);
-   for(var k3 in com) fd.append(k3,com[k3]);
-   rawFetch(u,{method:'POST',body:fd}).then(function(r){
-    var s=r.status;
-    return r.text().then(function(t){ Rec.okResult(c.id,s,t); });
-   }).catch(function(e){ try{Rec.okErr(c.id,String(e))}catch(x){} }).then(function(){ busy=false; });
-  }catch(e){ busy=false; try{Rec.okErr(c.id,String(e))}catch(x){} }
- }
- setInterval(function(){
-  if(busy||!st.ready) return;
-  var s=''; try{ s=Rec.okPoll(); }catch(e){ return; }
-  if(!s) return;
-  var c; try{ c=JSON.parse(s); }catch(e){ return; }
-  run(c);
- },400);
-})();
-"""
-
-const val MAMBA_VARS = "{\"ageFrom\":18,\"ageTo\":80,\"gender\":\"F\",\"heightFrom\":150,\"heightTo\":220,\"location\":\"3159_4312_4400_0\",\"limit\":15}"
-// Запрос ленты «Рейтинг» урезан до id фото: остальные поля сайта нам не нужны
-const val MAMBA_QUERY = "query Rating(\$ageFrom: Int!, \$ageTo: Int!, \$gender: String!, \$heightFrom: Int, \$heightTo: Int, " +
-    "\$offsetPhotoId: Int, \$location: String, \$coordinates: GeoPointArg, \$limit: Int!) { photoRating { queue(ageFrom: \$ageFrom, " +
-    "ageTo: \$ageTo, gender: \$gender, heightFrom: \$heightFrom, heightTo: \$heightTo, location: \$location, coordinates: \$coordinates, " +
-    "offsetPhotoId: \$offsetPhotoId, limit: \$limit) { photos { photo { photoId: id } } } } }"
-
-// Профиль сервиса: адрес сайта, куки и значения по умолчанию. У каждого сервиса свой процесс, свои настройки и файлы
-class Svc(
-    val id: String,
-    val title: String,
-    val site: String,
-    val hosts: List<String>,
-    val hostSuffix: String,
-    val prefsName: String,
-    val suffix: String,
-    val cookieUrls: List<String>,
-    val cookieDomain: String,
-    val defLikeUrl: String,
-    val defLikeMethod: String,
-    val defLikeBody: String,
-    val defSearchUrl: String,
-    val defSearchMethod: String,
-    val defSbody: String,
-    val nidOff: Int,
-    val activityCls: Class<*>,
-    val keepCls: Class<*>,
-    // сколько длится окно лимита лайков у сайта (если сайт сам не назвал время сброса)
-    val limitWindowMs: Long = SITE_LIMIT_MS,
-    // известный лимит лайков за окно (0 = пока не известен, узнаём по ответам сайта)
-    val siteLimit: Int = 0,
-    // учиться длине окна по ответам сайта (у сайтов, где окно известно точно, выключено)
-    val learnWin: Boolean = true,
-    // лимит сбрасывается в полночь по Москве (календарные сутки), а не через N часов после первого лайка
-    val dailyReset: Boolean = false
-)
-
-val SERVICES = listOf(
-    Svc(
-        "rambler", "Rambler", SITE, listOf(SITE), "rambler.ru", "liker", "",
-        COOKIE_URLS, ".rambler.ru",
-        DEFAULT_LIKE_URL, "GET", "", DEFAULT_SEARCH_URL, "POST", DEFAULT_SBODY,
-        0, MainActivity::class.java, KeepAliveService::class.java,
-        // Rambler: по диагностике сайт отдаёт likesfree=2000 на окно 24 ч, а время сброса в секундах в likestimeout
-        siteLimit = 2000, learnWin = false
-    ),
-    // Mamba: лайк ставится на фото в «Рейтинге», лента листается по id последнего фото
-    Svc(
-        "mamba", "Mamba", "https://www.mamba.ru",
-        listOf("https://www.mamba.ru", "https://mamba.ru", "https://m.mamba.ru"), "mamba.ru", "liker_mamba", "_mamba",
-        listOf("https://www.mamba.ru/", "https://mamba.ru/", "https://m.mamba.ru/"), ".mamba.ru",
-        "/api/ratings/v2/voting/photos/{login}/like?_loc%5Blocale%5D=ru", "POST", "{\"voteSource\":1}",
-        "/api/graphql/?_loc[locale]=ru", "POST", "",
-        10, MambaActivity::class.java, MambaKeepAliveService::class.java,
-        // Mamba: по диагностике сайт отказывает (limit_exceeded) ровно после 250 лайков за окно
-        siteLimit = 250
-    ),
-    // Табор: голосование «Симпатии». Первые анкеты берём со страницы, дальше каждая оценка возвращает следующую
-    Svc(
-        "tabor", "Tabor", "https://m.tabor.ru/sympathy/vote.php",
-        listOf("https://m.tabor.ru", "https://tabor.ru", "https://www.tabor.ru"), "tabor.ru", "liker_tabor", "_tabor",
-        listOf("https://m.tabor.ru/", "https://tabor.ru/", "https://www.tabor.ru/"), ".tabor.ru",
-        // оценка возвращает в ответе следующую анкету; в запросе перечисляются остальные уже показанные анкеты
-        "/api/sympathy-vote.php?method=vote", "POST", "user_id={login}&type=like&ad_user={ad}{exclude}",
-        "/sympathy/vote.php", "GET", "",
-        20, TaborActivity::class.java, TaborKeepAliveService::class.java,
-        // Tabor: сайт пишет на странице «Вы сможете проголосовать через 15 часов, 20 минут и 4 секунды»: берём время оттуда
-        learnWin = false
-    ),
-    // OK: «ОК Знакомства» это мини-приложение внутри ok.ru (окно другого домена). Лента: dating.getRecommendedUsers,
-    // лайк: dating.like (user_id + meta из ленты). Токен и прочие параметры берутся у самого приложения (см. OK_JS)
-    Svc(
-        "ok", "OK", "https://ok.ru/app/dating",
-        listOf("https://ok.ru", "https://www.ok.ru", "https://m.ok.ru"), "ok.ru", "liker_ok", "_ok",
-        listOf("https://ok.ru/", "https://www.ok.ru/", "https://m.ok.ru/"), ".ok.ru",
-        OK_API + "dating.like", "POST", "user_id={login}&meta={meta}",
-        OK_API + "dating.getRecommendedUsers", "POST", "count=20",
-        30, OkActivity::class.java, OkKeepAliveService::class.java,
-        12L * 3600000L, // OK: по диагностике окно 12 часов (сброс = первый лайк окна + 12 ч)
-        learnWin = false
-    ),
-    // Love.ru: пока только вход и запись из «Браузера». Адреса ленты и лайка неизвестны, их даст диагностика с сайта
-    Svc(
-        "love", "Love.ru", "https://love.ru/znakomstva/female/18-33/",
-        listOf("https://love.ru", "https://www.love.ru", "https://m.love.ru"), "love.ru", "liker_love", "_love",
-        listOf("https://love.ru/", "https://www.love.ru/", "https://m.love.ru/"), ".love.ru",
-        // адреса для Love.ru только для проверки настроек: сами запросы шлёт страница сайта, мы жмём её кнопку «Симпатия»
-        "/search/?action=sympathy-send&login_to={login}", "POST", "", "/search/?action=load-more-users", "GET", "",
-        40, LoveActivity::class.java, LoveKeepAliveService::class.java,
-        // Love.ru: по диагностике отказ «Превышен ежедневный лимит на отправку симпатий» пришёл после ~10000 лайков, после полуночи лайки пошли снова
-        siteLimit = 10000, learnWin = false, dailyReset = true
-    ),
-    // VK Знакомства: мини-приложение m.vk.ru/dating. Тот же движок, что у ОК: лента dating.getRecommendedUsers и лайк dating.like
-    // на vkdating-app.ru, токен и параметры берутся у самого мини-приложения (см. OK_JS)
-    Svc(
-        "vk", "VK Знакомства", "https://m.vk.ru/dating",
-        listOf("https://m.vk.ru", "https://vk.ru", "https://www.vk.ru", "https://m.vk.com", "https://vk.com"), "vk.ru", "liker_vk", "_vk",
-        listOf("https://m.vk.ru/", "https://vk.ru/", "https://id.vk.ru/", "https://m.vk.com/", "https://vk.com/"), ".vk.ru",
-        "https://vkdating-app.ru/api/dating.like", "POST", "user_id={login}&meta={meta}",
-        "https://vkdating-app.ru/api/dating.getRecommendedUsers", "POST", "count=20&geo={\"latitude\":55.7558,\"longitude\":37.6173}",
-        50, VkActivity::class.java, VkKeepAliveService::class.java
-    ),
-    // Beboo: в поиске с фильтрами открываем каждую анкету и нажимаем на ней лайк (см. BEBOO_JS). Адрес поиска с фильтрами меняется в «Адресах и подсказках»
-    Svc(
-        "beboo", "Beboo",
-        "https://m.beboo.ru/search?status=recently&lookFor=1&f=1&countryId=104&regionId=445&townId=4465&lookFor=1&startAge=40&endAge=100&reason=0&f=0",
-        listOf("https://m.beboo.ru", "https://beboo.ru", "https://www.beboo.ru"), "beboo.ru", "liker_beboo", "_beboo",
-        listOf("https://m.beboo.ru/", "https://beboo.ru/", "https://www.beboo.ru/"), ".beboo.ru",
-        // адреса лайка у Beboo нет: лайк ставится нажатием на кнопку в анкете. Значение нужно только для проверки настроек
-        "/{login}", "GET", "",
-        "https://m.beboo.ru/search?status=recently&lookFor=1&f=1&countryId=104&regionId=445&townId=4465&lookFor=1&startAge=40&endAge=100&reason=0&f=0", "GET", "",
-        60, BebooActivity::class.java, BebooKeepAliveService::class.java
-    ),
-    // Love.Mail.Ru построен на той же платформе, что и Mamba: тот же лайк фото в «Рейтинге» и та же GraphQL-лента. Работает как Mamba, но на домене love.mail.ru
-    Svc(
-        "lmail", "Love.Mail.Ru",
-        "https://love.mail.ru/ru/rating",
-        listOf("https://love.mail.ru", "https://mail.ru", "https://auth.mail.ru", "https://account.mail.ru"), "mail.ru", "liker_lmail", "_lmail",
-        listOf("https://love.mail.ru/", "https://mail.ru/", "https://auth.mail.ru/", "https://account.mail.ru/"), ".mail.ru",
-        "/api/ratings/v2/voting/photos/{login}/like?_loc%5Blocale%5D=ru", "POST", "{\"voteSource\":1}",
-        "/api/graphql/?_loc[locale]=ru", "POST", "",
-        70, LoveMailActivity::class.java, LoveMailKeepAliveService::class.java,
-        siteLimit = 250
-    ),
-    // LovePlanet: та же платформа, что у Rambler Знакомств: лайк /api/a-likes, лента /api/a-search, ответ с likesfree/likesleft. Работает как Rambler, но на домене m.loveplanet.ru
-    Svc(
-        "lplanet", "LovePlanet",
-        "https://m.loveplanet.ru/index/meet",
-        listOf("https://m.loveplanet.ru", "https://loveplanet.ru", "https://www.loveplanet.ru"), "loveplanet.ru", "liker_lplanet", "_lplanet",
-        listOf("https://m.loveplanet.ru/", "https://loveplanet.ru/", "https://www.loveplanet.ru/"), ".loveplanet.ru",
-        DEFAULT_LIKE_URL, "GET", "", DEFAULT_SEARCH_URL, "POST", DEFAULT_SBODY,
-        80, LovePlanetActivity::class.java, LovePlanetKeepAliveService::class.java,
-        // по записи сайт отдаёт likesfree=2000, как у Rambler
-        siteLimit = 2000, learnWin = false
-    )
-)
-
-// В диагностике скрываем токены и ключи (access_token ВК и подобные), чтобы её можно было спокойно пересылать
-fun maskSecrets(t: String): String {
-    var r = t
-    r = Regex("(access_token|logout_hash|crashToken|token|sign|secret|password|passwd)=[^&\\s\"]+").replace(r, "$1=***")
-    r = Regex("\"(access_token|logout_hash|token|secret|sign|key)\"\\s*:\\s*\"[^\"]*\"").replace(r, "\"$1\":\"***\"")
-    r = Regex("([?&]key=)[0-9a-f]{20,}").replace(r, "$1***")
-    r = Regex("vk1\\.[a-zA-Z]\\.[A-Za-z0-9_\\-]{30,}").replace(r, "vk1.***")
-    return r
-}
-
-class Prof(val name: String, val age: String, val from: String, val to: String, val city: String)
-class Rep(val ts: Long, val login: String, val p: Prof)
-
-fun yearsText(a: String): String {
-    val n = a.toIntOrNull() ?: return "$a лет"
-    val w = if (n % 100 in 11..14) {
-        "лет"
-    } else {
-        when (n % 10) {
-            1 -> "год"
-            2, 3, 4 -> "года"
-            else -> "лет"
-        }
-    }
-    return "$n $w"
-}
-
-// «Katerina, 30 лет — ищет от 29 до 40 лет»
-fun fmtProf(p: Prof): String {
-    if (p.from == "tabor" || p.from == "ok" || p.from == "love" || p.from == "beboo") return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)}" + if (p.city.isNotEmpty()) ", ${p.city}" else ""
-    if (p.age.isEmpty() && p.from.isEmpty() && p.to.isEmpty() && (p.name.startsWith("фото ") || p.name.startsWith("профиль "))) return p.name
-    val seek = when {
-        p.from.isNotEmpty() && p.to.isNotEmpty() -> "ищет от ${p.from} до ${p.to} лет"
-        p.from.isNotEmpty() -> "ищет от ${p.from} лет"
-        p.to.isNotEmpty() -> "ищет до ${p.to} лет"
-        else -> "ищет: нет данных"
-    }
-    return "${p.name.ifEmpty { "имя ?" }}, ${if (p.age.isEmpty()) "? лет" else yearsText(p.age)} — $seek"
-}
-
-/**
- * Движок лайков. Живёт в процессе приложения как одиночка и работает внутри фоновой службы
- * (KeepAliveService) со своим скрытым WebView, поэтому окно приложения для работы не нужно:
- * если система закрыла процесс, служба перезапускается и движок продолжает сам.
- * Все вызовы только из главного потока.
- */
 class Engine private constructor(private val app: Context, val svc: Svc) {
     companion object {
         @Volatile
@@ -831,8 +121,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Лимит лайков у сайта (у каждого сайта свой, число мы не знаем: ориентируемся на ответ сайта).
     // Конец ожидания хранится в настройках по настенным часам, чтобы отсчёт переживал перезапуск приложения
     // Свой лимит приложения: 0 или максимум (2000) значит «без лимита», тогда останавливает только сайт
-    fun appLimitOff(): Boolean = true
-    fun limTxt(): String = if (appLimitOff()) "без лимита" else prefs.getInt("limit", DEFAULT_LIMIT).toString()
 
     fun siteLimitLeftMs(): Long = maxOf(0L, prefs.getLong("siteLimitUntil", 0L) - System.currentTimeMillis())
     fun siteLimitActive(): Boolean = siteLimitLeftMs() > 0L
@@ -934,8 +222,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun batchLat(): Long = if (batchSentAt > 0L) SystemClock.elapsedRealtime() - batchSentAt else -1L
     var aggCount = 0
     var aggStart = 0L
-    var lastNotif = ""
-    var lastNotifAt = 0L
     var lastCookieSave = 0L
     var cookieSaveLogged = false
     var loginRestoredCount = 0
@@ -991,7 +277,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
     }
 
-    // раз в 3 секунды: сторожевой таймер цикла, нажатие «Войти», уведомление, обновление окна
+    // раз в 3 секунды: сторожевой таймер цикла, нажатие «Войти», обновление окна
     private val maint = object : Runnable {
         override fun run() {
             try {
@@ -1004,7 +290,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 if (running && autoFlag()) {
                     web?.evaluateJavascript("window.__autoTick&&window.__autoTick()", null)
                 }
-                updateNotif()
             } catch (e: Exception) {
             }
             if (running) stats.touch()
@@ -1157,7 +442,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             j.put("state", stateCode())
             j.put("verdict", verdict())
             j.put("count", prefs.getInt("count", 0))
-            j.put("limit", prefs.getInt("limit", DEFAULT_LIMIT))
             j.put("left", likesLeft)
             j.put("site", limitInfo())
             j.put("siteMax", siteMax())
@@ -1271,13 +555,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val p = ArrayList<String>()
         p.add("темп ${rateText()}/мин")
         p.add("окно ${ci("winFrom", DEFAULT_WIN_FROM)}–${ci("winTo", DEFAULT_WIN_TO)}")
-        p.add("лимит приложения ${limTxt()}")
         p.add("общие настройки ${if (commonOn()) "вкл" else "выкл"}")
         p.add("паузы: ошибки ${ci("errPauseMin", 0)}, анкеты кончились ${ci("feedPauseMin", 45)}, вход ${ci("authPauseMin", 30)}, проба лимита ${probeText()}")
         val lu = prefs.getString("likeUrl", svc.defLikeUrl) ?: ""
         val su = prefs.getString("searchUrl", svc.defSearchUrl) ?: ""
         val lb = prefs.getString("likeBody", svc.defLikeBody) ?: ""
-        if (pageSvc()) {
+        if (isBeboo()) {
             p.add("адрес страницы: ${maskSecrets(su).take(140)}")
             if (lb.isNotBlank()) p.add("селектор кнопки лайка: ${lb.take(80)}")
             val ls = prefs.getString("bebooLinkSel", "") ?: ""
@@ -1323,20 +606,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return sb.toString()
     }
 
-    // Все сохранённые настройки сайта одной строкой (cookie и длинные служебные значения не выводим)
-    private fun prefsDump(): String {
-        val skip = setOf("cookies", "lastStick", "lastLimitEvt")
-        val parts = ArrayList<String>()
-        try {
-            for ((k, v) in prefs.all.entries.sortedBy { it.key }) {
-                if (k in skip) continue
-                parts.add("$k=${maskSecrets((v ?: "").toString().replace("\n", " ")).take(120)}")
-            }
-        } catch (e: Exception) {
-        }
-        return parts.joinToString("; ")
-    }
-
     // Файл с диагностикой лежит в общей папке приложения: главный экран собирает «общую диагностику» из файлов всех сайтов
     fun writeDiagFile() {
         stats.flush(true)
@@ -1352,7 +621,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
 
     fun statusText(): String =
         verdict() + "\n" + (if (running) "РАБОТАЕТ" else "остановлен") +
-            "\nлайков сегодня: ${prefs.getInt("count", 0)}/${limTxt()}" +
+            "\nлайков сегодня: ${prefs.getInt("count", 0)}" +
             "\n" + limitInfo() +
             "\nлайков за сессию: $sessLikes" +
             "\nэтот час: ${hourInfo()}" +
@@ -1364,7 +633,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     fun logStatsText(): String {
         val mins = if (running) (SystemClock.elapsedRealtime() - sessStart) / 60000 else 0
         return verdict() + "\n" + (if (running) "работает $mins мин" else "остановлен") +
-            "\nлайков за сессию: $sessLikes, сегодня: ${prefs.getInt("count", 0)}/${limTxt()}" +
+            "\nлайков за сессию: $sessLikes, сегодня: ${prefs.getInt("count", 0)}" +
             "\nэтот час: ${hourInfo()}" +
             "\nв очереди: ${queue.size}, ошибок: $errors, следующее действие: ${nextInfo()}"
     }
@@ -1372,9 +641,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // ---------- настройки темпа ----------
     private fun fmtNum(f: Float): String = if (f == f.toInt().toFloat()) f.toInt().toString() else f.toString()
 
-    fun rateMin(): Float = cf("rateMin", if (pageSvc()) 8f else DEFAULT_RATE_MIN)
+    fun rateMin(): Float = cf("rateMin", if (isBeboo()) 8f else DEFAULT_RATE_MIN)
 
-    fun rateMax(): Float = cf("rateMax", if (pageSvc()) 12f else DEFAULT_RATE_MAX)
+    fun rateMax(): Float = cf("rateMax", if (isBeboo()) 12f else DEFAULT_RATE_MAX)
 
     // «60-80» (или одно число, если границы равны)
     fun rateText(): String =
@@ -1436,8 +705,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (!ramblerApi()) view?.evaluateJavascript(HDR_JS, null)
         view?.evaluateJavascript(apiJs(!ramblerApi()), null)
         if (svc.id == "love") view?.evaluateJavascript(LOVE_JS, null)
-        if (cardSvc()) view?.evaluateJavascript("window.__bcard=true;", null)
-        if (pageSvc()) view?.evaluateJavascript(BEBOO_JS, null)
+        if (isBeboo()) view?.evaluateJavascript(BEBOO_JS, null)
         view?.evaluateJavascript(AUTO_JS + "window.__autoOn=" + autoFlag() + ";window.__autoDiag=" + autoOn + ";", null)
     }
 
@@ -1516,7 +784,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageReady = true
                 inject(view)
-                if (svc.id == "beboo") bebooPageDone(url) else if (cardSvc()) cardPageDone(url)
+                if (svc.id == "beboo") bebooPageDone(url)
                 CookieManager.getInstance().flush()
             }
         }
@@ -1536,11 +804,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         @JavascriptInterface
         fun apiLimits(text: String) {
             h.post { onMambaLimits(text) }
-        }
-
-        @JavascriptInterface
-        fun apiLike(login: String, text: String) {
-            h.post { onLike(login, text, 200) }
         }
 
         @JavascriptInterface
@@ -1774,56 +1037,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
     }
 
-    // ---------- уведомления ----------
-    // Статус в постоянном уведомлении (обновляется, только когда текст изменился)
-    private fun updateNotif() {
-        if (!running) return
-        val state = when {
-            siteLimitActive() -> "лимит сайта, сброс через ${siteLimitLeftText()}"
-            limitWait && pauseUntil > SystemClock.elapsedRealtime() -> "пауза до $pauseClock"
-            nightLogged -> "вне окна работы"
-            autoOn -> "захожу в аккаунт"
-            else -> "работает"
-        }
-        val text = "$state · сегодня ${prefs.getInt("count", 0)}/${limTxt()} · за час $hourCount"
-        if (text == lastNotif || SystemClock.elapsedRealtime() - lastNotifAt < 15000L) return
-        lastNotif = text
-        lastNotifAt = SystemClock.elapsedRealtime()
-        try {
-            val pi = PendingIntent.getActivity(app, 0, Intent(app, svc.activityCls), PendingIntent.FLAG_IMMUTABLE)
-            val n = Notification.Builder(app, "liker")
-                .setContentTitle("${svc.title}: лайки идут")
-                .setContentText(text)
-                .setSmallIcon(android.R.drawable.ic_menu_send)
-                .setContentIntent(pi)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .build()
-            app.getSystemService(NotificationManager::class.java).notify(svc.nidOff + 1, n)
-        } catch (e: Exception) {
-        }
-    }
-
-    private fun notifyAlert(id: Int, title: String, text: String) {
-        if (!prefs.getBoolean("alerts", true)) return
-        if (id == 3 && !prefs.getBoolean("alertAuth", true)) return
-        if (id == 4 && !prefs.getBoolean("alertLimit", true)) return
-        try {
-            val nm = app.getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(NotificationChannel("liker_alert", "Liker: важное", NotificationManager.IMPORTANCE_HIGH))
-            val pi = PendingIntent.getActivity(app, 0, Intent(app, svc.activityCls), PendingIntent.FLAG_IMMUTABLE)
-            val n = Notification.Builder(app, "liker_alert")
-                .setContentTitle(title)
-                .setContentText(text)
-                .setSmallIcon(android.R.drawable.ic_menu_send)
-                .setContentIntent(pi)
-                .setAutoCancel(true)
-                .build()
-            nm.notify(svc.nidOff + id, n)
-        } catch (e: Exception) {
-        }
-    }
-
     // ---------- запуск и остановка ----------
     // По умолчанию лайки должны идти всегда: запускаем, если не нажимали «Стоп»
     fun ensureRunning() {
@@ -1858,7 +1071,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         limitWait = false
         pauseUntil = 0L
         errLevel = 0
-        lastNotif = ""
         if (siteLimitActive()) {
             limitWait = true
             pauseUntil = SystemClock.elapsedRealtime() + siteLimitLeftMs()
@@ -1900,10 +1112,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         h.removeCallbacks(wd)
         h.removeCallbacks(errResume)
         prefs.edit().putBoolean("wantRunning", false).apply()
-        try {
-            app.getSystemService(NotificationManager::class.java).cancel(svc.nidOff + 2)
-        } catch (e: Exception) {
-        }
         try {
             app.stopService(Intent(app, svc.keepCls))
         } catch (e: Exception) {
@@ -1960,12 +1168,8 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             pauseUntil = 0L
             likesLeft = -1
             logMsg("▶ Время сброса лимита сайта наступило. Продолжаю")
+            limitRenewed()
             if (web != null) loadSite()
-        }
-        val limit = prefs.getInt("limit", DEFAULT_LIMIT)
-        if (false && prefs.getInt("count", 0) >= limit) {
-            limitPause("Дневной лимит $limit достигнут")
-            return
         }
         val hour = Calendar.getInstance(mskTz).get(Calendar.HOUR_OF_DAY)
         val wf = ci("winFrom", DEFAULT_WIN_FROM)
@@ -2237,10 +1441,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             mambaLimitsQuery()
             return
         }
-        if (cardSvc()) {
-            cardStartBatch()
-            return
-        }
         if (svc.id == "beboo") {
             bebooStartBatch()
             return
@@ -2279,10 +1479,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private fun sendLike(login: String) {
         if (okLike) {
             okSend("like", okVal("likeUrl", svc.defLikeUrl), okParams(okVal("likeBody", svc.defLikeBody), login, okMeta[login] ?: "", 0L), login)
-            return
-        }
-        if (cardSvc()) {
-            cardClick(login)
             return
         }
         if (svc.id == "beboo") {
@@ -2447,31 +1643,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             h.postDelayed(tick, 2500)
             return
         }
-        if (pageSvc() && kind == "skip") {
+        if (isBeboo() && kind == "skip") {
             // кнопка уже в состоянии «лайк стоит»
             bebooSkips++
             bebooMiss = 0
             if (bebooSkips <= 3 || bebooSkips % 25 == 0) logMsg("↷ ${svc.title}: лайк уже стоит, пропускаю: $msg (всего пропущено: $bebooSkips)")
-            if (cardSvc()) {
-                // лента не сдвинулась: после трёх таких подряд открываем страницу заново, после трёх перезагрузок останавливаемся
-                cardSkips++
-                if (cardSkips >= 3) {
-                    cardSkips = 0
-                    cardReloads++
-                    queue.clear()
-                    if (cardReloads >= 3) {
-                        cardReloads = 0
-                        handleError("${svc.title}: после перезагрузок на странице всё те же карточки с уже стоящим лайком. Проверь адрес ленты в «Адресах и подсказках»")
-                    } else {
-                        cardStartBatch(force = true)
-                    }
-                    return
-                }
-            }
             scheduleNext(quick = true)
             return
         }
-        if (pageSvc() && kind == "like") {
+        if (isBeboo() && kind == "like") {
             // не нашли кнопку или сайт не ответил: пропускаем, а подряд 6 таких считаем ошибкой
             bebooMiss++
             if (bebooMiss <= 2 || bebooMiss % 10 == 0) logMsg("⚠ ${svc.title}: лайк не поставлен ($bebooMiss подряд): ${msg.take(900)}")
@@ -2479,9 +1659,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (bebooMiss >= 6) {
                 bebooMiss = 0
                 handleError("${svc.title}: 6 раз подряд без лайка. ${msg.take(300)}")
-            } else if (cardSvc() && bebooMiss == 3) {
-                queue.clear()
-                cardStartBatch(force = true)
             } else {
                 scheduleNext(quick = true)
             }
@@ -2539,6 +1716,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (daily > 0 && made >= daily && renew > 0L) {
                 val until = System.currentTimeMillis() + renew * 1000L + 30000L
                 prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", true).apply()
+                LimitNotify.schedule(app, svc, until, true)
                 pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
                 limitWait = true
                 logMsg("📊 Mamba: сайт сообщил лимит $made из $daily, сброс через ${renew / 60} мин (около ${siteLimitClock()})")
@@ -2590,7 +1768,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Итог лайка: 0 успех, 24 вход слетел, остальное ошибка. Rambler: по полю errno, как раньше
     private fun likeCode(j: JSONObject, text: String, status: Int): Int {
         if (ramblerApi()) return j.optInt("errno", -1)
-        if (pageSvc()) {
+        if (isBeboo()) {
             if (status == 401 || status == 403 || j.optBoolean("auth", false)) return 24
             if (status !in 200..299) return status
             return if (j.optInt("status", 0) == 1) 0 else -1
@@ -2627,86 +1805,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return 0
     }
 
-    // ---------- Love.Mail.Ru и LovePlanet: лента на самой странице ----------
-    private fun pageSvc(): Boolean = svc.id == "beboo"
-    private fun cardSvc(): Boolean = false
+    // ---------- Признаки сервисов с общей платформой ----------
+    private fun isBeboo(): Boolean = svc.id == "beboo"
     // Rambler и LovePlanet: одна платформа, один API (/api/a-likes, /api/a-search)
     private fun ramblerApi(): Boolean = svc.id == "rambler" || svc.id == "lplanet"
     // Mamba и Love.Mail.Ru: одна платформа, один API
     private fun mambaSvc(): Boolean = svc.id == "mamba" || svc.id == "lmail"
-    private var cardPending = false
-    private var cardSkips = 0
-    private var cardReloads = 0
-    private var cardSeq = 0
-    private var cardCur: String? = null
-
-    private fun cardOnFeed(url: String?): Boolean {
-        if (url == null) return false
-        return try {
-            val a = android.net.Uri.parse(url)
-            val b = android.net.Uri.parse(searchPageUrl())
-            a.host == b.host && (a.path ?: "").trimEnd('/').startsWith((b.path ?: "").trimEnd('/'))
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    // очередь пуста: убеждаемся, что открыта страница ленты (или открываем её заново) и кладём метки «карточка N»
-    private fun cardStartBatch(force: Boolean = false) {
-        waiting = true
-        h.removeCallbacks(wd)
-        h.postDelayed(wd, 30000)
-        if (force || !cardOnFeed(web?.url)) {
-            cardPending = true
-            pageReady = false
-            w().loadUrl(searchPageUrl())
-            return
-        }
-        cardFill()
-    }
-
-    private fun cardFill() {
-        cardPending = false
-        h.removeCallbacks(wd)
-        waiting = false
-        repeat(30) {
-            cardSeq++
-            queue.addLast("карточка $cardSeq")
-        }
-        scheduleNext(quick = true)
-    }
-
-    private fun cardClick(token: String) {
-        if (!cardOnFeed(web?.url)) {
-            queue.clear()
-            cardStartBatch()
-            return
-        }
-        cardCur = token
-        waiting = true
-        likeSentAt = SystemClock.elapsedRealtime()
-        h.removeCallbacks(wd)
-        h.postDelayed(wd, 30000)
-        w().evaluateJavascript("if(window.__lk&&window.__lk.like){window.__lk.like(${JSONObject.quote(token)},'','',${JSONObject.quote(bebooLikeSel())});}else{Rec.apiErr('notready-like',${JSONObject.quote(token)});}", null)
-    }
-
-    private fun cardPageDone(url: String?) {
-        if (!running) return
-        if (cardCur != null && url != null && (url.contains("/paid/") || url.contains("/vip"))) {
-            bebooPaywall(url)
-            return
-        }
-        if (cardPending && cardOnFeed(url)) {
-            h.postDelayed({ if (cardPending && running) cardFill() }, 1800)
-            return
-        }
-        // страница перезагрузилась сразу после нажатия: ответ скрипта потерян, лайк не засчитываем
-        if (cardCur != null && waiting && !cardPending && SystemClock.elapsedRealtime() - likeSentAt > 600) {
-            val cur = cardCur
-            cardCur = null
-            onApiErr("like", "после нажатия страница перезагрузилась ($cur): ${url?.take(80)}")
-        }
-    }
 
     // ---------- Beboo: поиск с фильтрами -> страница анкеты -> кнопка лайка ----------
     private var bebooCur: String? = null
@@ -2723,7 +1827,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // адрес поиска с фильтрами (настройка «URL поиска»)
     private fun searchPageUrl(): String = (prefs.getString("searchUrl", svc.defSearchUrl) ?: svc.defSearchUrl).ifBlank { svc.defSearchUrl }
 
-    private fun siteUrl(): String = if (pageSvc()) searchPageUrl() else svc.site
+    private fun siteUrl(): String = if (isBeboo()) searchPageUrl() else svc.site
 
     private fun bebooLinkSel(): String = (prefs.getString("bebooLinkSel", "") ?: "").trim()
 
@@ -2765,7 +1869,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // после нажатия сайт увёл страницу на VIP («больше симпатий только с VIP»): это лимит, а не лайк
     private fun bebooPaywall(url: String) {
         bebooCur = null
-        cardCur = null
         bebooLikeSent = true
         h.removeCallbacks(wd)
         waiting = false
@@ -3261,11 +2364,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 if (svc.id == "love" && loveSticky) loadSite()
                 if (probing) probeSuccess()
                 if (svc.id == "love") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "love", "", j.optString("_city"))
-                if (pageSvc()) {
+                if (isBeboo()) {
                     if (svc.id == "beboo") profInfo[login] = Prof(j.optString("_name"), j.optString("_age"), "beboo", "", j.optString("_city"))
                     bebooMiss = 0
-                    cardSkips = 0
-                    cardReloads = 0
                     if (sessLikes < 3) logMsg("   ${svc.title}: лайк засчитан (${j.optString("how")}; ответ: ${j.optString("text").take(120)})")
                 }
                 if (svc.id == "tabor") {
@@ -3323,13 +2424,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 val left = if (likesLeft < 0) "?" else likesLeft.toString()
                 val cnt = prefs.getInt("count", 0)
                 if (maxOf(rateMin(), rateMax()) <= 6f || sessLikes <= 3) {
-                    logMsg("❤ Лайк $cnt/${limTxt()}: $prof ($login), осталось у сайта: $left")
+                    logMsg("❤ Лайк $cnt: $prof ($login), осталось у сайта: $left")
                 } else {
                     aggCount++
                     val nowE = SystemClock.elapsedRealtime()
                     if (aggStart == 0L) aggStart = nowE
                     if (nowE - aggStart >= 60000L) {
-                        if (prefs.getBoolean("logMinute", true)) logMsg("❤ За минуту лайков: $aggCount. Сегодня $cnt/${limTxt()}, осталось у сайта: $left. Последний: $prof ($login)")
+                        if (prefs.getBoolean("logMinute", true)) logMsg("❤ За минуту лайков: $aggCount. Сегодня $cnt, осталось у сайта: $left. Последний: $prof ($login)")
                         aggCount = 0
                         aggStart = nowE
                     }
@@ -3437,7 +2538,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         val am = ci("authPauseMin", 30).coerceAtLeast(1)
         val d = am * 60000L
         logMsg("🔒 $reason. Повторю попытку через $am мин (если нужен код из СМС — открой приложение и войди вручную)")
-        notifyAlert(3, "Нужен вход в аккаунт", "Открой приложение и войди. Повторная попытка через $am мин")
         nextAt = SystemClock.elapsedRealtime() + d
         h.removeCallbacks(tick)
         h.postDelayed(errResume, d)
@@ -3603,6 +2703,12 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         h.post { if (running && !waiting) step() }
     }
 
+    // Лимит у сайта обновился: единственное уведомление приложения. Напоминание на это время больше не нужно
+    private fun limitRenewed() {
+        LimitNotify.cancel(app, svc)
+        LimitNotify.show(app, svc, prefs.getBoolean("siteResetNamed", false))
+    }
+
     // Сайт принял лайк, хотя по расчёту лимит ещё закрыт: окно началось заново
     private fun probeSuccess() {
         stats.event("probeOk")
@@ -3613,7 +2719,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         pauseUntil = 0L
         likesLeft = -1
         logMsg("✅ Проверка лимита: сайт снова ставит лайки, сброс наступил раньше расчётного (${siteLimitClock(probeBackup)}). Продолжаю")
-        notifyAlert(5, "${svc.title}: лимит сбросился", "Сайт снова принимает лайки, продолжаю")
+        limitRenewed()
     }
 
     // Проверка новых анкет: если лента закончилась и приложение ждёт 30–60 мин, ищем заново прямо сейчас
@@ -3627,11 +2733,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         h.removeCallbacks(tick)
         h.post { if (running && !waiting) step() }
         return "Ищу новые анкеты"
-    }
-
-    fun feedWaitText(): String {
-        val left = feedWaitUntil - SystemClock.elapsedRealtime()
-        return if (running && left > 0L) "Поиск новых анкет через ${left / 60000 + 1} мин" else ""
     }
 
     private fun siteLimitPause(reason: String, raw: String = "") {
@@ -3664,6 +2765,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (wasProbe && fromSite == null && probeBackup > System.currentTimeMillis() + 60000L) until = probeBackup
         else if (!wasProbe) lastProbeAt = System.currentTimeMillis()
         prefs.edit().putLong("siteLimitUntil", until).putBoolean("siteResetNamed", fromSite != null).putInt("limitFix", 63).apply()
+        LimitNotify.schedule(app, svc, until, fromSite != null)
         limitWait = true
         pauseUntil = SystemClock.elapsedRealtime() + (until - System.currentTimeMillis())
         pauseClock = SimpleDateFormat("HH:mm", Locale.US).format(Date(until))
@@ -3710,7 +2812,6 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             }
         } catch (e: Exception) {
         }
-        if (!wasProbe) notifyAlert(4, "${svc.title}: лайки у сайта закончились", "Сброс через ${siteLimitLeftText()} (около ${siteLimitClock()}), потом продолжу сам")
         nextAt = SystemClock.elapsedRealtime() + 60000L
         h.removeCallbacks(tick)
         h.postDelayed(tick, 60000L)

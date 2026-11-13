@@ -3,11 +3,7 @@ package com.nugggets.ramblerliker
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.Notification
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.net.Uri
-import android.os.PowerManager
 import android.provider.Settings
 import android.webkit.RenderProcessGoneDetail
 import android.content.ClipData
@@ -25,7 +21,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
@@ -36,10 +31,8 @@ import android.webkit.JsResult
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
-import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -47,14 +40,10 @@ import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.Random
-import java.util.TimeZone
 
 import android.text.Editable
 import android.text.SpannableStringBuilder
@@ -156,6 +145,7 @@ open class MainActivity : Activity() {
     private lateinit var etOnlineFirst: EditText
     private var geoCb: GeolocationPermissions.Callback? = null
     private lateinit var urlBar: EditText
+    private lateinit var favBox: LinearLayout
     private lateinit var appBarV: View
     private lateinit var stripV: View
     private lateinit var navV: View
@@ -171,7 +161,6 @@ open class MainActivity : Activity() {
     private lateinit var navLabels: List<TextView>
     private lateinit var recText: TextView
     private lateinit var recFilter: EditText
-    private lateinit var etLimit: EditText
     private lateinit var etRate: EditText
     private lateinit var etWinFrom: EditText
     private lateinit var etWinTo: EditText
@@ -193,7 +182,6 @@ open class MainActivity : Activity() {
     private lateinit var stTitle: TextView
     private lateinit var stVerdict: TextView
     private lateinit var stCount: TextView
-    private lateinit var stLimit: TextView
     private lateinit var stLeft: TextView
     private lateinit var stReset: TextView
     private lateinit var stBar: BarView
@@ -254,12 +242,6 @@ open class MainActivity : Activity() {
         accent = svcColor(engine.svc.id)
         window.statusBarColor = Pal.SURFACE
         window.navigationBarColor = Pal.SURFACE
-        try {
-            val nmc = getSystemService(NotificationManager::class.java)
-            nmc.cancel(engine.svc.nidOff + 2)
-            nmc.cancel(engine.svc.nidOff + 3)
-        } catch (e: Exception) {
-        }
         val askPerms = ArrayList<String>()
         if (Build.VERSION.SDK_INT >= 33 && !prefs.getBoolean("notifAsked", false) &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -287,13 +269,13 @@ open class MainActivity : Activity() {
         stripV = strip
         root.addView(strip, lp(MATCH, dp(2)))
         val content = FrameLayout(this)
-        panels = listOf(buildControlTab(), buildLogTab(), buildReportTab(), buildBrowserTab(), buildRecTab())
+        panels = listOf(buildControlTab(), buildLogTab(), buildReportTab(), buildBrowserTab(), buildRecTab(), buildFavTab())
         for (p in panels) content.addView(p, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(content, lp(MATCH, 0, 1f))
         navV = buildNav()
         root.addView(navV, lp(MATCH, WRAP))
         setContentView(root)
-        show(intent.getIntExtra("tab", 0).coerceIn(0, 4))
+        show(intent.getIntExtra("tab", 0).coerceIn(0, 5))
         engine.ensureRunning() // по умолчанию лайки идут всегда, если не нажимали «Стоп»
         askBackgroundOnce()
     }
@@ -328,7 +310,7 @@ open class MainActivity : Activity() {
         val nav = LinearLayout(this)
         nav.orientation = LinearLayout.HORIZONTAL
         nav.setBackgroundColor(Pal.SURFACE)
-        val items = listOf("🎛" to "Управление", "📜" to "Журнал", "📊" to "Отчёт", "🌐" to "Браузер", "🧪" to "Запросы")
+        val items = listOf("🎛" to "Управление", "📜" to "Журнал", "📊" to "Отчёт", "🌐" to "Браузер", "🧪" to "Запросы", "⭐" to "Избранное")
         val ic = ArrayList<TextView>()
         val lb = ArrayList<TextView>()
         for ((i, item) in items.withIndex()) {
@@ -340,7 +322,8 @@ open class MainActivity : Activity() {
             cell.setOnClickListener { show(i) }
             val a = tv(item.first, 18f)
             a.gravity = Gravity.CENTER
-            val b = tv(item.second, 10f, Pal.MUTED, true)
+            val b = tv(item.second, 9.5f, Pal.MUTED, true)
+            b.maxLines = 1
             b.gravity = Gravity.CENTER
             cell.addView(a, lp(WRAP, WRAP))
             cell.addView(b, lp(WRAP, WRAP))
@@ -403,10 +386,8 @@ open class MainActivity : Activity() {
         cr.orientation = LinearLayout.HORIZONTAL
         cr.gravity = Gravity.BOTTOM
         stCount = tv("0", 34f, Pal.TEXT, true)
-        stLimit = tv(" / 0", 16f, Pal.MUTED)
         stLeft = lbl("")
         cr.addView(stCount)
-        cr.addView(stLimit, lp(WRAP, WRAP, l = 4, b = 6))
         cr.addView(View(this), lp(0, 0, 1f))
         cr.addView(stLeft, lp(WRAP, WRAP, b = 6))
         st.addView(cr, lp(MATCH, WRAP, t = 12))
@@ -456,15 +437,6 @@ open class MainActivity : Activity() {
         val tempo = card()
         tempo.addView(tv("Темп", 16f, Pal.TEXT, true))
         if (Common.on(this)) tempo.addView(lbl("Включены общие настройки: темп, окно, дни, перерывы и паузы берутся из них (главный экран, «Общие настройки»). Значения ниже сейчас не действуют."), lp(MATCH, WRAP, t = 8))
-        // своего лимита нет: останавливает только лимит сайта. Поле оставлено скрытым, чтобы не ломать сохранение
-        etLimit = inp("0", "0", true)
-        val lr = LinearLayout(this)
-        lr.visibility = View.GONE
-        lr.gravity = Gravity.CENTER_VERTICAL
-        lr.addView(pill("−10", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { stepLimit(-10) }, lp(dp(56), WRAP, r = 8))
-        lr.addView(etLimit, lp(0, WRAP, 1f))
-        lr.addView(pill("+10", Pal.SURFACE2, Pal.TEXT, Pal.STROKE) { stepLimit(10) }, lp(dp(56), WRAP, l = 8))
-        tempo.addView(lr, lp(MATCH, WRAP, t = 6))
         tempo.addView(lbl("Лайков в минуту, от–до (пауза случайная, поэтому темп плавает)"), lp(MATCH, WRAP, t = 14))
         etRate = inp("60-80", engine.rateText(), false)
         tempo.addView(etRate, lp(MATCH, WRAP, t = 6))
@@ -534,10 +506,6 @@ open class MainActivity : Activity() {
         swRow("Пауза при слабом заряде", "Ниже 15% без зарядки лайки ждут", "lowBat", false)
         swRow("Перезапускать зависший цикл", "Если лайки встали больше чем на 5 минут, цикл запускается заново", "watchdog", true)
         if (engine.svc.id == "love") swRow("Закрывать окна сайта", "Окна вроде «Сохраните доступ к своей анкете» закрываются перед каждым лайком", "loveClose", true)
-        ext.addView(tv("Уведомления", 14f, accent, true), lp(MATCH, WRAP, t = 18))
-        swRow("Уведомления", "Главный выключатель всех уведомлений ниже", "alerts", true)
-        swRow("О лимите сайта", "Когда лайки у сайта закончились и когда сброс", "alertLimit", true)
-        swRow("О потере входа", "Когда нужно войти в аккаунт заново", "alertAuth", true)
         ext.addView(tv("Журнал и экран", 14f, accent, true), lp(MATCH, WRAP, t = 18))
         swRow("Писать поиск анкет", "Строки «🔎 Поиск: позиции…» в журнале", "logSearch", true)
         swRow("Писать итог за минуту", "Строки «❤ За минуту лайков…» в журнале", "logMinute", true)
@@ -858,12 +826,13 @@ open class MainActivity : Activity() {
         r1.addView(pill("◀", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoBack()) web.goBack() }, lp(0, WRAP, 0.7f, r = 6))
         r1.addView(pill("▶", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { if (web.canGoForward()) web.goForward() }, lp(0, WRAP, 0.7f, r = 6))
         r1.addView(pill("⟳", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { web.reload() }, lp(0, WRAP, 0.7f, r = 6))
-        r1.addView(pill("⌂", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
-            web.loadUrl(if (pageSvcUi()) (prefs.getString("searchUrl", engine.svc.defSearchUrl) ?: engine.svc.site) else engine.svc.site)
-        }, lp(0, WRAP, 0.7f, r = 6))
+        r1.addView(pill("☆", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 14f, 9) { favAdd() }, lp(0, WRAP, 0.7f, r = 6))
         r1.addView(pill("⋯", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) { r2.visibility = if (r2.visibility == View.GONE) View.VISIBLE else View.GONE }, lp(0, WRAP, 0.7f, r = 6))
         r1.addView(pill("⤢ На весь экран", accent, Pal.TEXT, accent, 12f, 9) { setBrowserFull(true) }, lp(0, WRAP, 2f))
         tb.addView(r1, lp(MATCH, WRAP))
+        r2.addView(pill("⌂ Домой", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
+            web.loadUrl(if (pageSvcUi()) (prefs.getString("searchUrl", engine.svc.defSearchUrl) ?: engine.svc.site) else engine.svc.site)
+        }, lp(0, WRAP, 1f, r = 6))
         r2.addView(pill("Копировать адрес", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 9) {
             val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cb.setPrimaryClip(ClipData.newPlainText("url", web.url ?: ""))
@@ -892,6 +861,103 @@ open class MainActivity : Activity() {
         browserTb = tb
         box.addView(tb, lp(MATCH, WRAP))
         return box
+    }
+
+    // ---------- Избранное: сохранённые ссылки из браузера ----------
+    private fun favLoad(): MutableList<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>()
+        try {
+            val a = JSONArray(prefs.getString("favs", "[]") ?: "[]")
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                out.add(o.optString("t") to o.optString("u"))
+            }
+        } catch (e: Exception) {
+        }
+        return out
+    }
+
+    private fun favSave(list: List<Pair<String, String>>) {
+        val a = JSONArray()
+        for ((t, u) in list) a.put(JSONObject().put("t", t).put("u", u))
+        prefs.edit().putString("favs", a.toString()).apply()
+    }
+
+    // Сохраняет страницу, открытую сейчас во вкладке «Браузер»
+    private fun favAdd() {
+        val u = web.url ?: ""
+        if (!u.startsWith("http")) {
+            toast("Нечего сохранять: открой страницу")
+            return
+        }
+        val list = favLoad()
+        if (list.any { it.second == u }) {
+            toast("Эта страница уже в избранном")
+            return
+        }
+        val t = (web.title ?: "").trim().ifBlank { Uri.parse(u).host ?: u }.take(80)
+        list.add(0, t to u)
+        favSave(list.take(100))
+        toast("Добавлено в избранное")
+        if (::favBox.isInitialized) renderFavs()
+    }
+
+    private fun openFav(url: String) {
+        show(3)
+        web.loadUrl(url)
+    }
+
+    private fun buildFavTab(): View {
+        val sv = ScrollView(this)
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(12), dp(12), dp(12), dp(16))
+        col.addView(tv("Избранное", 18f, Pal.TEXT, true), lp(MATCH, WRAP))
+        col.addView(lbl("Ссылки из вкладки «Браузер». Сохрани страницу кнопкой ☆ в панели браузера, а здесь открывай её одним нажатием."), lp(MATCH, WRAP, t = 4, b = 8))
+        col.addView(pill("☆ Сохранить страницу из браузера", accent, Pal.TEXT, accent, 13f, 10) {
+            if (webLoaded) favAdd() else toast("Сначала открой вкладку «Браузер»")
+        }, lp(MATCH, WRAP, b = 8))
+        favBox = LinearLayout(this)
+        favBox.orientation = LinearLayout.VERTICAL
+        col.addView(favBox, lp(MATCH, WRAP))
+        sv.addView(col)
+        return sv
+    }
+
+    private fun renderFavs() {
+        favBox.removeAllViews()
+        val list = favLoad()
+        if (list.isEmpty()) {
+            favBox.addView(lbl("Пока пусто."), lp(MATCH, WRAP, t = 8))
+            return
+        }
+        for ((idx, f) in list.withIndex()) {
+            val c = card()
+            val title = tv(f.first, 14f, Pal.TEXT, true)
+            title.maxLines = 2
+            val url = tv(f.second, 11f, Pal.MUTED)
+            url.maxLines = 1
+            url.ellipsize = android.text.TextUtils.TruncateAt.END
+            c.addView(title, lp(MATCH, WRAP))
+            c.addView(url, lp(MATCH, WRAP, t = 2))
+            val row = LinearLayout(this)
+            row.addView(pill("Открыть", accent, Pal.TEXT, accent, 12f, 8) { openFav(f.second) }, lp(0, WRAP, 1f, r = 6))
+            row.addView(pill("Копировать", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {
+                val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cb.setPrimaryClip(ClipData.newPlainText("url", f.second))
+                toast("Адрес скопирован")
+            }, lp(0, WRAP, 1f, r = 6))
+            row.addView(pill("✕", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {
+                val cur = favLoad()
+                if (idx < cur.size && cur[idx].second == f.second) {
+                    cur.removeAt(idx)
+                    favSave(cur)
+                    renderFavs()
+                }
+            }, lp(0, WRAP, 0.5f))
+            c.addView(row, lp(MATCH, WRAP, t = 8))
+            favBox.addView(c, lp(MATCH, WRAP, b = 8))
+        }
     }
 
     private fun buildRecTab(): View {
@@ -944,12 +1010,6 @@ open class MainActivity : Activity() {
         return col
     }
 
-    // ---------- управление ----------
-    private fun stepLimit(d: Int) {
-        val cur = etLimit.text.toString().trim().toIntOrNull() ?: prefs.getInt("limit", DEFAULT_LIMIT)
-        etLimit.setText((cur + d).coerceIn(0, MAX_LIMIT).toString())
-    }
-
     private fun onToggleClicked() {
         if (engine.running) {
             engine.stopLikes("остановлено")
@@ -991,7 +1051,7 @@ open class MainActivity : Activity() {
     private fun updateTop() {
         val st = engine.stateCode()
         barChip.setChip(stateLabel(st), stateColor(st))
-        barSub.setIf("v$verName  ·  сегодня ${prefs.getInt("count", 0)}/${engine.limTxt()}")
+        barSub.setIf("v$verName  ·  сегодня ${prefs.getInt("count", 0)}")
     }
 
     private fun runTime(): String {
@@ -1013,10 +1073,8 @@ open class MainActivity : Activity() {
         stTitle.setTextColor(stateColor(st))
         stVerdict.setIf(engine.verdict())
         val cnt = prefs.getInt("count", 0)
-        val lim = prefs.getInt("limit", DEFAULT_LIMIT)
         stCount.setIf(cnt.toString())
-        stLimit.setIf(" / ${engine.limTxt()}")
-        stBar.frac = 0f
+        stBar.frac = if (engine.siteMax() > 0) (engine.winCount().toFloat() / engine.siteMax()).coerceIn(0f, 1f) else 0f
         showSiteLimit()
         tHour.setIf(if (engine.running) engine.hourCount.toString() else "-")
         tSess.setIf(engine.sessLikes.toString())
@@ -1102,7 +1160,7 @@ open class MainActivity : Activity() {
         repNumHour.setIf(lastHour.toString())
         repNumSess.setIf(engine.sessLikes.toString())
         repMeta.setIf(
-            "Счётчик приложения: ${prefs.getInt("count", 0)}/${engine.limTxt()}  ·  " +
+            "Счётчик приложения: ${prefs.getInt("count", 0)}  ·  " +
                 "темп ${engine.rateText()} в минуту  ·  ошибок за сессию: ${engine.errors}  ·  всего в отчёте: ${engine.reports.size}"
         )
         repHours.data = hours
@@ -1157,6 +1215,7 @@ open class MainActivity : Activity() {
             1 -> renderLog()
             2 -> renderReport()
             4 -> renderRec()
+            5 -> renderFavs()
         }
     }
 
@@ -1693,7 +1752,6 @@ open class MainActivity : Activity() {
     }
 
     private fun saveSettings(notify: Boolean = true): Boolean {
-        val lim = (etLimit.text.toString().trim().toIntOrNull() ?: DEFAULT_LIMIT).coerceIn(0, MAX_LIMIT)
         val url = etLikeUrl.text.toString().trim().ifEmpty { engine.svc.defLikeUrl }
         val lm = etLikeMethod.text.toString().trim().uppercase().let { if (it == "GET" || it == "POST" || it == "PUT") it else engine.svc.defLikeMethod }
         val lb = etLikeBody.text.toString().trim()
@@ -1723,7 +1781,7 @@ open class MainActivity : Activity() {
         etBreakMin.setText(bm.toString())
         etMaxErr.setText(me.toString())
         etDays.setText(dy)
-        prefs.edit().putInt("limit", lim).putFloat("rateMin", pa).putFloat("rateMax", pb)
+        prefs.edit().putFloat("rateMin", pa).putFloat("rateMax", pb)
             .putInt("winFrom", wf).putInt("winTo", wt).putString("likeUrl", url)
             .putString("likeMethod", lm).putString("likeBody", lb).putString("searchUrl", su)
             .putString("searchExtra", if (engine.svc.id == "rambler" || engine.svc.id == "lplanet") etSearchExtra.text.toString().trim() else "")
@@ -1732,7 +1790,6 @@ open class MainActivity : Activity() {
             .putString("onlineFirst", etOnlineFirst.text.toString().trim().filter { it.isDigit() }).apply()
         etWinFrom.setText(wf.toString())
         etWinTo.setText(wt.toString())
-        etLimit.setText(lim.toString())
         etRate.setText(engine.rateText())
         etLikeUrl.setText(url)
         etLikeMethod.setText(lm)
