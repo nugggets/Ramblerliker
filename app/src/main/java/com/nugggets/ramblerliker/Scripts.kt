@@ -331,12 +331,25 @@ const val BEBOO_JS = """
    try{ var l=document.querySelectorAll(sel); for(var i=0;i<l.length;i++){ if(vis(l[i])) return {el:l[i],liked:DONE.test(attrs(l[i]))||l[i].getAttribute('aria-pressed')==='true',how:'селектор'}; } }catch(e){}
    return {el:null};
   }
+  // Beboo: лайк это ссылка /meets/acceptSympathy?userId=..&status=3 (по записи запросов сайта); остальные статусы пропускаем
+  var acc=document.querySelectorAll('a[href*="acceptSympathy"],[onclick*="acceptSympathy"],[data-href*="acceptSympathy"],[data-url*="acceptSympathy"]');
+  var pick=null;
+  for(var q=0;q<acc.length;q++){
+   var ae=acc[q]; if(!vis(ae)) continue;
+   var ah=(ae.getAttribute('href')||ae.getAttribute('data-href')||ae.getAttribute('data-url')||ae.getAttribute('onclick')||'');
+   if(/status=3/.test(ah)){ pick=ae; break; }
+   if(!pick&&!/status=[0-9]/.test(ah)) pick=ae;
+  }
+  if(pick){
+   var pc=String(pick.className&&pick.className.baseVal!==undefined?pick.className.baseVal:pick.className);
+   return {el:pick,liked:/(^|[\s_-])(liked|done|checked)([\s_-]|$)/i.test(pc)||pick.disabled===true,how:'acceptSympathy'};
+  }
   var cs=document.querySelectorAll('button,a,[role=button],[onclick],input[type=button],input[type=submit],[class*=like],[class*=Like],[class*=heart],[class*=sympath],[data-action],[data-like]');
   var best=null,bs=0;
   for(var j=0;j<cs.length;j++){
    var e=cs[j]; if(!vis(e)) continue;
    try{ if(e.closest('nav,header,footer')) continue; }catch(x){}
-   if(e.tagName==='A'){ var uu=absU(e); if(uu&&(NAV.test(uu.pathname)||uu.pathname==='/')) continue; }
+   if(e.tagName==='A'){ var uu=absU(e); if(uu&&(NAV.test(uu.pathname)||uu.pathname==='/')&&!/(accept|like|sympath|vote)/i.test(e.getAttribute('href')||'')) continue; }
    var t=txt(e); if(t.length>40) continue;
    var a=attrs(e), all=(t+' '+a);
    if(NEG.test(all)) continue;
@@ -363,8 +376,8 @@ const val BEBOO_JS = """
  function snap(sel){
   try{
    var cs=document.querySelectorAll('button,a,[role=button],[onclick]'), out=[];
-   for(var i=0;i<cs.length&&out.length<14;i++){ var e=cs[i]; if(!vis(e)) continue; var t=txt(e).slice(0,18); var c=String(e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className).slice(0,30); out.push(e.tagName.toLowerCase()+(c?'.'+c:'')+(t?'«'+t+'»':'')); }
-   return 'url: '+location.pathname+location.search+' | заголовок: '+(document.title||'').slice(0,40)+' | кнопки: '+out.join(' ; ')+' | текст: '+body().slice(0,160);
+   for(var i=0;i<cs.length&&out.length<14;i++){ var e=cs[i]; if(!vis(e)) continue; var t=txt(e).slice(0,18); var c=String(e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className).slice(0,30); var hr=e.getAttribute('href'); out.push(e.tagName.toLowerCase()+(c?'.'+c:'')+(t?'«'+t+'»':'')+(hr&&hr.charAt(0)!=='#'?'→'+hr.split('?')[0].slice(0,30)+(/status=\d/.test(hr)?'?'+(/status=\d/.exec(hr)[0]):''):'')); }
+   return 'url: '+location.pathname+' | заголовок: '+(document.title||'').slice(0,40)+' | кнопки: '+out.join(' ; ')+' | текст: '+body().slice(0,160);
   }catch(e){ return 'снимок: '+e; }
  }
  window.__lk.like=function(login,url,method,sel){
@@ -387,7 +400,7 @@ const val BEBOO_JS = """
     var before=attrs(b.el), el=b.el, a=(el.tagName==='A')?el:null;
     window.__bcap.list=[]; window.__bcap.on=true;
     var href=a?(a.getAttribute('href')||''):'';
-    var plain=a&&href&&href.charAt(0)!=='#'&&!/^javascript:/i.test(href)&&!a.getAttribute('onclick')&&/(like|sympath|accept|vote)/i.test(href);
+    var plain=a&&href&&href.charAt(0)!=='#'&&!/^javascript:/i.test(href)&&!a.getAttribute('onclick')&&/(like|sympath|vote)/i.test(href)&&!/accept/i.test(href);
     if(plain){
      // обычная ссылка-лайк: идём по ней сами, чтобы страница не уходила на другой адрес
      var u=absU(a);

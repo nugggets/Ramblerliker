@@ -529,6 +529,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         return sb.toString()
     }
 
+    // Строки со снимком страницы (названия кнопок) нужны целиком, остальные режем
+    private fun lineLimit(l: String): Int = if (l.contains("кнопки:") || l.contains("снимок")) 700 else 260
+
     // Подряд идущие однотипные строки журнала сворачиваем в одну: «(×5) последняя строка»
     private fun compactLog(lines: List<String>, max: Int): String {
         val out = ArrayList<String>()
@@ -540,11 +543,11 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             val key = body.replace(Regex("[0-9]+"), "#").take(22)
             if (key == lastKey && out.isNotEmpty()) {
                 cnt++
-                out[out.size - 1] = "(×$cnt) " + l.take(240)
+                out[out.size - 1] = "(×$cnt) " + l.take(lineLimit(l))
             } else {
                 lastKey = key
                 cnt = 1
-                out.add(l.take(240))
+                out.add(l.take(lineLimit(l)))
             }
         }
         return out.takeLast(max).joinToString("\n")

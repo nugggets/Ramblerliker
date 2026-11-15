@@ -773,10 +773,12 @@ fun compactReport(rep: String): String {
         if (name.isEmpty()) return
         val keep: List<String>? = when {
             name.startsWith("Выводы") -> lines
+                .filterNot { it.contains("процесс запускался") || it.contains("Сессий прервано") || it.contains("Окно лимита по отказам") }
+                .map { it.substringBefore(". При темпе") }
             name.startsWith("Частые ошибки") -> lines.take(6)
             name.startsWith("Лимит сайта по истории") -> lines.take(5)
             name.startsWith("Запросы к сайту") -> lines.filter { it.startsWith("лайк:") || it.startsWith("поиск:") || it.startsWith("первая страница:") || it.startsWith("причины") || it.startsWith("фактический") }.take(6)
-            name.startsWith("Сессии") -> lines.takeLast(4)
+            name.startsWith("Сессии") -> lines.takeLast(2)
             else -> null
         }
         if (keep != null && keep.isNotEmpty()) {
