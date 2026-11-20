@@ -863,25 +863,8 @@ open class MainActivity : Activity() {
         return box
     }
 
-    // ---------- Избранное: сохранённые ссылки из браузера ----------
-    private fun favLoad(): MutableList<Pair<String, String>> {
-        val out = ArrayList<Pair<String, String>>()
-        try {
-            val a = JSONArray(prefs.getString("favs", "[]") ?: "[]")
-            for (i in 0 until a.length()) {
-                val o = a.getJSONObject(i)
-                out.add(o.optString("t") to o.optString("u"))
-            }
-        } catch (e: Exception) {
-        }
-        return out
-    }
-
-    private fun favSave(list: List<Pair<String, String>>) {
-        val a = JSONArray()
-        for ((t, u) in list) a.put(JSONObject().put("t", t).put("u", u))
-        prefs.edit().putString("favs", a.toString()).apply()
-    }
+    // ---------- Избранное: ссылки из браузера. Анкеты оттуда лайкаются первыми и уходят в архив ----------
+    private fun favDate(ms: Long): String = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale("ru")).format(java.util.Date(ms))
 
     // Сохраняет страницу, открытую сейчас во вкладке «Браузер»
     private fun favAdd() {
@@ -890,15 +873,15 @@ open class MainActivity : Activity() {
             toast("Нечего сохранять: открой страницу")
             return
         }
-        val list = favLoad()
-        if (list.any { it.second == u }) {
+        val list = Favs.load(prefs)
+        if (list.any { it.url == u }) {
             toast("Эта страница уже в избранном")
             return
         }
         val t = (web.title ?: "").trim().ifBlank { Uri.parse(u).host ?: u }.take(80)
-        list.add(0, t to u)
-        favSave(list.take(100))
-        toast("Добавлено в избранное")
+        list.add(0, FavItem(t, u))
+        Favs.save(prefs, Favs.KEY, list)
+        toast(if (engine.favLogin(u) != null) "Добавлено: анкета лайкнется первой" else "Добавлено в избранное")
         if (::favBox.isInitialized) renderFavs()
     }
 
@@ -913,7 +896,7 @@ open class MainActivity : Activity() {
         col.orientation = LinearLayout.VERTICAL
         col.setPadding(dp(12), dp(12), dp(12), dp(16))
         col.addView(tv("Избранное", 18f, Pal.TEXT, true), lp(MATCH, WRAP))
-        col.addView(lbl("Ссылки из вкладки «Браузер». Сохрани страницу кнопкой ☆ в панели браузера, а здесь открывай её одним нажатием."), lp(MATCH, WRAP, t = 4, b = 8))
+        col.addView(lbl("Анкеты из избранного приложение лайкает первыми, потом переносит их в архив и продолжает в обычном режиме. Сохрани страницу анкеты кнопкой ☆ в панели браузера."), lp(MATCH, WRAP, t = 4, b = 8))
         col.addView(pill("☆ Сохранить страницу из браузера", accent, Pal.TEXT, accent, 13f, 10) {
             if (webLoaded) favAdd() else toast("Сначала открой вкладку «Браузер»")
         }, lp(MATCH, WRAP, b = 8))
@@ -924,40 +907,62 @@ open class MainActivity : Activity() {
         return sv
     }
 
-    private fun renderFavs() {
-        favBox.removeAllViews()
-        val list = favLoad()
-        if (list.isEmpty()) {
-            favBox.addView(lbl("Пока пусто."), lp(MATCH, WRAP, t = 8))
-            return
+    private fun favRow(f: FavItem, archived: Boolean): View {
+        val c = card()
+        val title = tv(f.title, 14f, Pal.TEXT, true)
+        title.maxLines = 2
+        val url = tv(f.url, 11f, Pal.MUTED)
+        url.maxLines = 1
+        url.ellipsize = android.text.TextUtils.TruncateAt.END
+        c.addView(title, lp(MATCH, WRAP))
+        c.addView(url, lp(MATCH, WRAP, t = 2))
+        val st = if (archived) {
+            if (f.ok) "✔ лайк поставлен ${favDate(f.at)}" else "✖ не удалось ${favDate(f.at)}"
+        } else if (engine.favLogin(f.url) != null) {
+            "🔜 лайкнется первой"
+        } else {
+            "ℹ для этой ссылки анкета не определена, в очередь не попадёт"
         }
-        for ((idx, f) in list.withIndex()) {
-            val c = card()
-            val title = tv(f.first, 14f, Pal.TEXT, true)
-            title.maxLines = 2
-            val url = tv(f.second, 11f, Pal.MUTED)
-            url.maxLines = 1
-            url.ellipsize = android.text.TextUtils.TruncateAt.END
-            c.addView(title, lp(MATCH, WRAP))
-            c.addView(url, lp(MATCH, WRAP, t = 2))
-            val row = LinearLayout(this)
-            row.addView(pill("Открыть", accent, Pal.TEXT, accent, 12f, 8) { openFav(f.second) }, lp(0, WRAP, 1f, r = 6))
+        c.addView(tv(st, 12f, if (archived && !f.ok) Pal.MUTED else accent), lp(MATCH, WRAP, t = 4))
+        val row = LinearLayout(this)
+        row.addView(pill("Открыть", accent, Pal.TEXT, accent, 12f, 8) { openFav(f.url) }, lp(0, WRAP, 1f, r = 6))
+        if (archived) {
+            row.addView(pill("Вернуть", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {
+                Favs.restore(prefs, f)
+                renderFavs()
+            }, lp(0, WRAP, 1f, r = 6))
+        } else {
             row.addView(pill("Копировать", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {
                 val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cb.setPrimaryClip(ClipData.newPlainText("url", f.second))
+                cb.setPrimaryClip(ClipData.newPlainText("url", f.url))
                 toast("Адрес скопирован")
             }, lp(0, WRAP, 1f, r = 6))
-            row.addView(pill("✕", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {
-                val cur = favLoad()
-                if (idx < cur.size && cur[idx].second == f.second) {
-                    cur.removeAt(idx)
-                    favSave(cur)
-                    renderFavs()
-                }
-            }, lp(0, WRAP, 0.5f))
-            c.addView(row, lp(MATCH, WRAP, t = 8))
-            favBox.addView(c, lp(MATCH, WRAP, b = 8))
         }
+        row.addView(pill("✕", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {
+            val key = if (archived) Favs.ARCHIVE else Favs.KEY
+            Favs.save(prefs, key, Favs.load(prefs, key).filter { it.url != f.url })
+            renderFavs()
+        }, lp(0, WRAP, 0.5f))
+        c.addView(row, lp(MATCH, WRAP, t = 8))
+        return c
+    }
+
+    private fun renderFavs() {
+        favBox.removeAllViews()
+        val list = Favs.load(prefs)
+        if (list.isEmpty()) favBox.addView(lbl("Пока пусто."), lp(MATCH, WRAP, t = 4, b = 8))
+        for (f in list) favBox.addView(favRow(f, false), lp(MATCH, WRAP, b = 8))
+        val arch = Favs.load(prefs, Favs.ARCHIVE)
+        favBox.addView(tv("Архив (${arch.size})", 16f, Pal.TEXT, true), lp(MATCH, WRAP, t = 12, b = 4))
+        if (arch.isEmpty()) {
+            favBox.addView(lbl("Сюда попадают анкеты, которым лайк уже поставлен."), lp(MATCH, WRAP, b = 8))
+            return
+        }
+        favBox.addView(pill("Очистить архив", Pal.SURFACE2, Pal.TEXT, Pal.STROKE, 12f, 8) {
+            Favs.save(prefs, Favs.ARCHIVE, emptyList())
+            renderFavs()
+        }, lp(MATCH, WRAP, b = 8))
+        for (f in arch) favBox.addView(favRow(f, true), lp(MATCH, WRAP, b = 8))
     }
 
     private fun buildRecTab(): View {

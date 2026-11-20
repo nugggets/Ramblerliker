@@ -1244,11 +1244,70 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             return
         }
         hourOk()
-        if (queue.isEmpty()) {
+        val fav = nextFavorite()
+        if (fav != null) {
+            favCur = fav
+            sendLike(fav)
+        } else if (queue.isEmpty()) {
             fetchBatch()
         } else {
             sendLike(queue.removeFirst())
         }
+    }
+
+    // ---------- Избранные анкеты: лайкаются первыми, потом уходят в архив ----------
+    private var favCur: String? = null
+    private val favTries = HashMap<String, Int>()
+
+    // Логин (или путь) анкеты из ссылки избранного. null: ссылка не похожа на анкету этого сервиса, в очередь не попадёт
+    fun favLogin(url: String): String? {
+        val uri = try {
+            android.net.Uri.parse(url)
+        } catch (e: Exception) {
+            return null
+        }
+        val host = uri.host ?: return null
+        if (!host.endsWith(svc.hostSuffix)) return null
+        val path = uri.path ?: ""
+        val idRx = Regex("[A-Za-z0-9_.-]{3,40}")
+        return when {
+            ramblerApi() -> uri.getQueryParameter("login")?.takeIf { it.matches(idRx) }
+                ?: Regex("^/(?:a-page|page|id)/(?:popup/)?([A-Za-z0-9_.-]{3,40})/?$").find(path)?.groupValues?.get(1)
+                ?: Regex("^/([A-Za-z0-9_.-]{3,40})/?$").find(path)?.groupValues?.get(1)
+                    ?.takeIf { it !in setOf("index", "api", "search", "meet", "other", "chat", "settings", "login", "register") }
+            svc.id == "beboo" -> Regex("^/profile/(\\d+)").find(path)?.let { "/profile/" + it.groupValues[1] }
+            else -> null
+        }
+    }
+
+    // Первая избранная анкета, которую ещё не лайкали. Три неудачи подряд: в архив с пометкой «не удалось»
+    private fun nextFavorite(): String? {
+        for (f in Favs.load(prefs)) {
+            val login = favLogin(f.url) ?: continue
+            if ((favTries[login] ?: 0) >= 3) {
+                Favs.archive(prefs, f, false)
+                favTries.remove(login)
+                logMsg("⭐ Избранная анкета «${f.title.take(40)}»: три попытки не удались, перенёс в архив")
+                continue
+            }
+            return login
+        }
+        return null
+    }
+
+    // Итог лайка избранной анкеты. Отказ из-за лимита попыткой не считается: анкета дождётся сброса
+    private fun favResult(login: String, ok: Boolean, limit: Boolean = false) {
+        if (favCur != login) return
+        favCur = null
+        if (!ok) {
+            if (!limit) favTries[login] = (favTries[login] ?: 0) + 1
+            return
+        }
+        seen.add(login)
+        favTries.remove(login)
+        val f = Favs.load(prefs).firstOrNull { favLogin(it.url) == login } ?: return
+        Favs.archive(prefs, f, true)
+        logMsg("⭐ Лайк избранной анкете «${f.title.take(40)}» поставлен, перенёс в архив")
     }
 
     // ---------- дополнительные настройки: дни недели, Wi-Fi, лимиты, перерывы ----------
@@ -1650,6 +1709,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             // кнопка уже в состоянии «лайк стоит»
             bebooSkips++
             bebooMiss = 0
+            favCur?.let { favResult(it, true) } // лайк уже стоит: избранную анкету считаем выполненной
             if (bebooSkips <= 3 || bebooSkips % 25 == 0) logMsg("↷ ${svc.title}: лайк уже стоит, пропускаю: $msg (всего пропущено: $bebooSkips)")
             scheduleNext(quick = true)
             return
@@ -1657,6 +1717,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         if (isBeboo() && kind == "like") {
             // не нашли кнопку или сайт не ответил: пропускаем, а подряд 6 таких считаем ошибкой
             bebooMiss++
+            favCur?.let { favResult(it, false) }
             if (bebooMiss <= 2 || bebooMiss % 10 == 0) logMsg("⚠ ${svc.title}: лайк не поставлен ($bebooMiss подряд): ${msg.take(900)}")
             stats.request("like", false, -1L, "like: ${msg.take(40)}")
             if (bebooMiss >= 6) {
@@ -2392,6 +2453,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 sessLikes++
                 hourCount++
                 sinceBreak++
+                favResult(login, true)
                 lastLikeAt = SystemClock.elapsedRealtime()
                 sessionGood = true
                 errLevel = 0
@@ -2457,11 +2519,13 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                     soft11++
                     stats.event("soft11")
                     stats.request("like", true, lat, "")
+                    favResult(login, true)
                     if (soft11 == 1 || soft11 % 50 == 0) logMsg("ℹ Rambler: errno=11 для анкеты $login, пропускаю (не авария, всего таких: $soft11). Ответ: ${text.take(200)}")
                     scheduleNext()
                     return
                 }
                 stats.request("like", false, lat, if (looksLikeLimit(text)) "отказ: лимит (код $code)" else "код $code")
+                favResult(login, false, looksLikeLimit(text))
                 var shown = text.take(100)
                 var tm = ""
                 if (svc.id == "tabor") {
