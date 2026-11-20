@@ -866,6 +866,8 @@ open class MainActivity : Activity() {
     // ---------- Избранное: ссылки из браузера. Анкеты оттуда лайкаются первыми и уходят в архив ----------
     private fun favDate(ms: Long): String = java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale("ru")).format(java.util.Date(ms))
 
+    private fun mambaLike(): Boolean = engine.svc.id == "mamba" || engine.svc.id == "lmail"
+
     // Сохраняет страницу, открытую сейчас во вкладке «Браузер»
     private fun favAdd() {
         val u = web.url ?: ""
@@ -873,15 +875,39 @@ open class MainActivity : Activity() {
             toast("Нечего сохранять: открой страницу")
             return
         }
+        val t = (web.title ?: "").trim().ifBlank { Uri.parse(u).host ?: u }.take(80)
+        val uid = Regex("/profile/(\\d+)").find(u)?.groupValues?.get(1)
+        if (mambaLike() && uid != null) {
+            // лайк у Mamba ставится на фото: номер фото берём из адресов картинок на открытой странице анкеты (…/номер_анкеты/номер_фото_размер.jpg)
+            web.evaluateJavascript("(function(){var m=new RegExp('/$uid/(\\\\d{6,})_').exec(document.documentElement.innerHTML);return m?m[1]:'';})()") { raw ->
+                favStore(u, t, (raw ?: "").trim('"'))
+            }
+        } else {
+            favStore(u, t, "")
+        }
+    }
+
+    private fun favStore(u: String, t: String, ref: String) {
         val list = Favs.load(prefs)
-        if (list.any { it.url == u }) {
-            toast("Эта страница уже в избранном")
+        val old = list.indexOfFirst { it.url == u }
+        if (old >= 0) {
+            if (ref.isNotEmpty() && list[old].ref != ref) {
+                list[old] = FavItem(list[old].title, u, 0L, true, ref)
+                Favs.save(prefs, Favs.KEY, list)
+                toast("Фото анкеты найдено: анкета лайкнется первой")
+                if (::favBox.isInitialized) renderFavs()
+            } else {
+                toast("Эта страница уже в избранном")
+            }
             return
         }
-        val t = (web.title ?: "").trim().ifBlank { Uri.parse(u).host ?: u }.take(80)
-        list.add(0, FavItem(t, u))
+        list.add(0, FavItem(t, u, 0L, true, ref))
         Favs.save(prefs, Favs.KEY, list)
-        toast(if (engine.favLogin(u) != null) "Добавлено: анкета лайкнется первой" else "Добавлено в избранное")
+        toast(
+            if (engine.favLogin(u, ref) != null) "Добавлено: анкета лайкнется первой"
+            else if (mambaLike()) "Добавлено, но фото анкеты на странице не нашлось: открой анкету и нажми ☆ ещё раз"
+            else "Добавлено в избранное"
+        )
         if (::favBox.isInitialized) renderFavs()
     }
 
@@ -918,8 +944,10 @@ open class MainActivity : Activity() {
         c.addView(url, lp(MATCH, WRAP, t = 2))
         val st = if (archived) {
             if (f.ok) "✔ лайк поставлен ${favDate(f.at)}" else "✖ не удалось ${favDate(f.at)}"
-        } else if (engine.favLogin(f.url) != null) {
+        } else if (engine.favLogin(f.url, f.ref) != null) {
             "🔜 лайкнется первой"
+        } else if (mambaLike()) {
+            "ℹ у ${engine.svc.title} лайк ставится на фото. Открой эту анкету и нажми ☆ ещё раз: приложение найдёт её фото"
         } else {
             "ℹ для этой ссылки анкета не определена, в очередь не попадёт"
         }

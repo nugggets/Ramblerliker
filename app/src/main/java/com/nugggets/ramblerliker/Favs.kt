@@ -6,7 +6,8 @@ import org.json.JSONObject
 
 // Избранные ссылки сервиса и архив уже лайкнутых. Хранятся в настройках сервиса (favs и favArchive).
 // Анкеты из избранного движок лайкает первыми, потом переносит их в архив.
-class FavItem(val title: String, val url: String, val at: Long = 0L, val ok: Boolean = true)
+// ref: номер фото анкеты, нужен там, где лайк ставится на фото (Mamba, Love.Mail.Ru)
+class FavItem(val title: String, val url: String, val at: Long = 0L, val ok: Boolean = true, val ref: String = "")
 
 object Favs {
     const val KEY = "favs"
@@ -20,7 +21,7 @@ object Favs {
             val a = JSONArray(p.getString(key, "[]") ?: "[]")
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
-                out.add(FavItem(o.optString("t"), o.optString("u"), o.optLong("at", 0L), o.optBoolean("ok", true)))
+                out.add(FavItem(o.optString("t"), o.optString("u"), o.optLong("at", 0L), o.optBoolean("ok", true), o.optString("r")))
             }
         } catch (e: Exception) {
         }
@@ -30,7 +31,7 @@ object Favs {
     fun save(p: SharedPreferences, key: String, list: List<FavItem>) {
         val a = JSONArray()
         for (f in list.take(if (key == ARCHIVE) MAX_ARCHIVE else MAX)) {
-            a.put(JSONObject().put("t", f.title).put("u", f.url).put("at", f.at).put("ok", f.ok))
+            a.put(JSONObject().put("t", f.title).put("u", f.url).put("at", f.at).put("ok", f.ok).put("r", f.ref))
         }
         p.edit().putString(key, a.toString()).apply()
     }
@@ -39,7 +40,7 @@ object Favs {
     fun archive(p: SharedPreferences, item: FavItem, ok: Boolean) {
         save(p, KEY, load(p, KEY).filter { it.url != item.url })
         val arch = load(p, ARCHIVE).filter { it.url != item.url }.toMutableList()
-        arch.add(0, FavItem(item.title, item.url, System.currentTimeMillis(), ok))
+        arch.add(0, FavItem(item.title, item.url, System.currentTimeMillis(), ok, item.ref))
         save(p, ARCHIVE, arch)
     }
 
@@ -47,7 +48,7 @@ object Favs {
     fun restore(p: SharedPreferences, item: FavItem) {
         save(p, ARCHIVE, load(p, ARCHIVE).filter { it.url != item.url })
         val list = load(p, KEY).filter { it.url != item.url }.toMutableList()
-        list.add(0, FavItem(item.title, item.url))
+        list.add(0, FavItem(item.title, item.url, 0L, true, item.ref))
         save(p, KEY, list)
     }
 }

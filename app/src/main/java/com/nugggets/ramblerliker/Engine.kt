@@ -1259,8 +1259,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private var favCur: String? = null
     private val favTries = HashMap<String, Int>()
 
-    // Логин (или путь) анкеты из ссылки избранного. null: ссылка не похожа на анкету этого сервиса, в очередь не попадёт
-    fun favLogin(url: String): String? {
+    // Логин (или путь) анкеты из ссылки избранного. null: ссылка не похожа на анкету этого сервиса, в очередь не попадёт.
+    // ref: номер фото анкеты. У Mamba и Love.Mail.Ru лайк ставится на фото, а в ссылке только номер анкеты
+    fun favLogin(url: String, ref: String = ""): String? {
         val uri = try {
             android.net.Uri.parse(url)
         } catch (e: Exception) {
@@ -1275,6 +1276,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
                 ?: Regex("^/(?:a-page|page|id)/(?:popup/)?([A-Za-z0-9_.-]{3,40})/?$").find(path)?.groupValues?.get(1)
                 ?: Regex("^/([A-Za-z0-9_.-]{3,40})/?$").find(path)?.groupValues?.get(1)
                     ?.takeIf { it !in setOf("index", "api", "search", "meet", "other", "chat", "settings", "login", "register") }
+            mambaSvc() -> ref.takeIf { it.matches(Regex("\\d{6,}")) && Regex("^/(?:ru/)?profile/\\d+").containsMatchIn(path) }
             svc.id == "beboo" -> Regex("^/profile/(\\d+)").find(path)?.let { "/profile/" + it.groupValues[1] }
             else -> null
         }
@@ -1283,7 +1285,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     // Первая избранная анкета, которую ещё не лайкали. Три неудачи подряд: в архив с пометкой «не удалось»
     private fun nextFavorite(): String? {
         for (f in Favs.load(prefs)) {
-            val login = favLogin(f.url) ?: continue
+            val login = favLogin(f.url, f.ref) ?: continue
             if ((favTries[login] ?: 0) >= 3) {
                 Favs.archive(prefs, f, false)
                 favTries.remove(login)
@@ -1305,7 +1307,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         }
         seen.add(login)
         favTries.remove(login)
-        val f = Favs.load(prefs).firstOrNull { favLogin(it.url) == login } ?: return
+        val f = Favs.load(prefs).firstOrNull { favLogin(it.url, it.ref) == login } ?: return
         Favs.archive(prefs, f, true)
         logMsg("⭐ Лайк избранной анкете «${f.title.take(40)}» поставлен, перенёс в архив")
     }
