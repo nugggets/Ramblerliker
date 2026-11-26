@@ -2,6 +2,7 @@ package com.nugggets.ramblerliker
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -47,6 +48,7 @@ class HubActivity : Activity() {
     private lateinit var totalNum: TextView
     private lateinit var runChip: TextView
     private lateinit var bat: LinearLayout
+    private lateinit var notifBox: LinearLayout
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -110,6 +112,17 @@ class HubActivity : Activity() {
         bat.addView(pill("Разрешить", tint(Pal.WARN, 0x33), Pal.WARN, 0, 13f, 9) { askBattery() }, lp(MATCH, WRAP, t = 10))
         bat.visibility = View.GONE
         col.addView(bat, lp(MATCH, WRAP, t = 12))
+
+        // --- предупреждение: уведомления выключены в Android, «лимит обновился» не придёт ---
+        notifBox = LinearLayout(this)
+        notifBox.orientation = LinearLayout.VERTICAL
+        notifBox.setPadding(dp(14), dp(12), dp(14), dp(12))
+        notifBox.background = roundRect(tint(Pal.WARN, 0x1F), dpf(16f), Pal.WARN, dp(1))
+        notifBox.addView(tv("Уведомления выключены", 14f, Pal.WARN, true))
+        notifBox.addView(tv("Приложение шлёт только одно уведомление: «лимит обновился». Включи их, иначе оно не придёт.", 12f, Pal.MUTED), lp(MATCH, WRAP, t = 4))
+        notifBox.addView(pill("Открыть настройки уведомлений", tint(Pal.WARN, 0x33), Pal.WARN, 0, 13f, 9) { openNotifSettings() }, lp(MATCH, WRAP, t = 10))
+        notifBox.visibility = View.GONE
+        col.addView(notifBox, lp(MATCH, WRAP, t = 12))
 
         // --- сервисы ---
         for (sv in SERVICES) col.addView(buildCard(sv), lp(MATCH, WRAP, t = 12))
@@ -191,6 +204,7 @@ class HubActivity : Activity() {
         totalNum.setIf(total.toString())
         runChip.setChip("Работает $running из ${SERVICES.size}", if (running > 0) Pal.OK else Pal.MUTED)
         bat.visibility = if (batteryOk()) View.GONE else View.VISIBLE
+        notifBox.visibility = if (getSystemService(NotificationManager::class.java).areNotificationsEnabled()) View.GONE else View.VISIBLE
     }
 
     private fun bind(cd: SvcCard, s: SvcStatus, cnt: Int) {
@@ -391,6 +405,17 @@ class HubActivity : Activity() {
         getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
     } catch (e: Exception) {
         true
+    }
+
+    private fun openNotifSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            } catch (e2: Exception) {
+            }
+        }
     }
 
     private fun askBattery() {

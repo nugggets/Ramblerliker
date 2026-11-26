@@ -51,3 +51,6 @@ const val MAMBA_QUERY = "query Rating(\$ageFrom: Int!, \$ageTo: Int!, \$gender: 
     "\$offsetPhotoId: Int, \$location: String, \$coordinates: GeoPointArg, \$limit: Int!) { photoRating { queue(ageFrom: \$ageFrom, " +
     "ageTo: \$ageTo, gender: \$gender, heightFrom: \$heightFrom, heightTo: \$heightTo, location: \$location, coordinates: \$coordinates, " +
     "offsetPhotoId: \$offsetPhotoId, limit: \$limit) { photos { photo { photoId: id } } } } }"
+
+// Код итога лайка: фото уже оценено раньше (Mamba отвечает 403 double_vote). Это не потеря входа и не новый лайк
+const val CODE_ALREADY = -9

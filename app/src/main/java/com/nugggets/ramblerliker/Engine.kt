@@ -281,7 +281,9 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private val maint = object : Runnable {
         override fun run() {
             try {
-                if (prefs.getBoolean("watchdog", true) && running && !waiting && nextAt > 0L && SystemClock.elapsedRealtime() - nextAt > 300000L) {
+                // цикл «завис», только если он должен был проснуться больше 5 минут назад: паузы и ожидание сброса лимита не в счёт
+                val due = maxOf(nextAt, pauseUntil, feedWaitUntil)
+                if (prefs.getBoolean("watchdog", true) && running && !waiting && nextAt > 0L && SystemClock.elapsedRealtime() - due > 300000L) {
                     logMsg("⚠ Цикл завис, перезапускаю")
                     stats.event("watchdog")
                     h.removeCallbacks(tick)
@@ -1807,6 +1809,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
     private val ownSamples = ArrayList<String>()
     private var sampleLogged = false
     private var soft11 = 0
+    private var alreadyVoted = 0
     private var hdrLogAt = 0L
     private var autoInfoAt = 0L
     private var loveFail = 0
@@ -1851,6 +1854,7 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
             if (text.trimStart().startsWith("<")) return 24 // вместо ответа страница (вход слетел)
             return if (j.optBoolean("error", false)) -1 else 0
         }
+        if (mambaSvc() && j.optString("code") == "double_vote") return CODE_ALREADY
         if (status == 401 || status == 403) return 24
         if (status !in 200..299) return status
         if (text.trimStart().startsWith("<")) return -1 // вместо ответа пришла HTML-страница (вход, капча)
@@ -2422,6 +2426,15 @@ class Engine private constructor(private val app: Context, val svc: Svc) {
         try {
             val j = parseLike(text)
             val code = likeCode(j, text, status)
+            if (code == CODE_ALREADY) {
+                // фото уже оценено раньше: это не ошибка и не новый лайк, идём к следующему
+                alreadyVoted++
+                stats.event("alreadyVoted")
+                favResult(login, true)
+                if (alreadyVoted <= 3 || alreadyVoted % 50 == 0) logMsg("↷ ${svc.title}: фото $login уже оценено раньше, пропускаю (всего: $alreadyVoted)")
+                scheduleNext(quick = true)
+                return
+            }
             if (code == 0) {
                 recordReset(probing)
                 stats.likeOk(lat)
